@@ -1,5 +1,9 @@
 # Named Data Networking Neighbor Discovery (NDND)
 
+NOTE: This is a fork with the intent or allowing neighbor discovery using
+multi-cast and no server (ie, clients can find each other with no other support).
+This readme has NOT been updated for those changes yet.
+
 ## An Overview
 
 Named Data Networking proposes a fundamental change to the Internet’s architecture, moving from a point-to-point to a data-centric model.

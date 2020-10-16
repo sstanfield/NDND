@@ -9,8 +9,15 @@
 #include <ndn-cxx/util/sha256.hpp>
 #include <ndn-cxx/encoding/tlv.hpp>
 #include <ndn-cxx/util/scheduler.hpp>
+#include <ndn-cxx/face.hpp>
+#include <ndn-cxx/mgmt/nfd/controller.hpp>
+#include <ndn-cxx/mgmt/nfd/face-status.hpp>
+#include <ndn-cxx/mgmt/nfd/control-response.hpp>
+#include <ndn-cxx/mgmt/nfd/control-parameters.hpp>
+#include <ndn-cxx/mgmt/nfd/controller.hpp>
 #include <boost/asio.hpp>
 #include <sstream>
+#include <string.h>
 
 #include "nd-packet-format.h"
 #include "nfdc-helpers.h"
@@ -19,14 +26,19 @@ using namespace ndn;
 using namespace ndn::ndnd;
 using namespace std;
 
+const Name SERVER_PREFIX("/ndn/nd");
+const Name SERVER_DISCOVERY_PREFIX("/ndn/nd/arrival");
+const uint64_t SERVER_DISCOVERY_ROUTE_COST(1);
+const time::milliseconds SERVER_DISCOVERY_ROUTE_EXPIRATION = 30_s;
+const time::milliseconds SERVER_DISCOVERY_INTEREST_LIFETIME = 4_s;
+
 class Options
 {
 public:
   Options()
     : m_prefix("/test/01/02")
     , server_prefix("/ndn/nd")
-    // , server_ip("127.0.0.1")
-    , server_ip("131.179.176.110")
+    , server_ip("127.0.0.1")  // XXX not used- remove (multicast now)
   {
   }
 public:
@@ -45,28 +57,21 @@ public:
     , m_server_prefix(server_prefix)
   {
     m_scheduler = new Scheduler(m_face.getIoService());
-    is_ready = false;
+    m_controller = new nfd::Controller(m_face, m_keyChain);
     setIP();
     m_port = htons(6363); // default
     inet_aton(server_ip.c_str(), &m_server_IP);
-
-    // Bootstrap face and route to server
-    std::string uri = "udp4://";
-    uri += inet_ntoa(m_server_IP);
-    uri += ':';
-    uri += to_string(6363);
-    addFace(uri, true);
   }
 
   // TODO: remove face on SIGINT, SIGTERM
 
   void registerRoute(const Name& route_name, int face_id,
-                     int cost = 0, bool is_server_route = false) 
+                     int cost = 0) 
   {
     Interest interest = prepareRibRegisterInterest(route_name, face_id, m_keyChain, cost);
     m_face.expressInterest(
       interest,
-      bind(&NDNDClient::onRegisterRouteDataReply, this, _1, _2, is_server_route),
+      bind(&NDNDClient::onRegisterRouteDataReply, this, _1, _2),
       bind(&NDNDClient::onNack, this, _1, _2),
       bind(&NDNDClient::onTimeout, this, _1));
   }
@@ -75,15 +80,14 @@ public:
   {
     // reply data with IP confirmation
     Buffer contentBuf;
-    for (int i = 0; i < sizeof(m_IP); i++) {
+    for (unsigned int i = 0; i < sizeof(m_IP); i++) {
       contentBuf.push_back(*((uint8_t*)&m_IP + i));
     }
 
     auto data = make_shared<Data>(subInterest.getName());
     if (contentBuf.size() > 0) {
       data->setContent(contentBuf.get<uint8_t>(), contentBuf.size());
-    }
-    else {
+    } else {
       return;
     }
 
@@ -97,26 +101,100 @@ public:
   
   void sendArrivalInterest()
   {
-    if (!is_ready) {
-      std::cout << "NDND (Client): not ready, try again" << std::endl;
-      m_scheduler->schedule(time::seconds(1), [this] {
-          sendArrivalInterest();
+    nfd::FaceQueryFilter filter;
+    filter.setLinkType(nfd::LINK_TYPE_MULTI_ACCESS);
+
+    m_controller->fetch<nfd::FaceQueryDataset>(
+      filter,
+      bind(&NDNDClient::registerMultiPrefix, this, _1),
+      [this] (uint32_t code, const std::string& reason) {
+        std::cout << "NDND (Client): Error " << to_string(code) << " when querying multi-access faces: " << reason << endl;
+        exit(1);
       });
-      return;
+  }
+
+  void registerMultiPrefix(const std::vector<nfd::FaceStatus>& dataset) {
+    if (dataset.empty()) {
+      std::cout << "NDND (Client): No multi-access faces available" << endl;
+      exit(1);
     }
+
+    m_nRegs = dataset.size();
+    m_nRegSuccess = 0;
+    m_nRegFailure = 0;
+
+    for (const auto& faceStatus : dataset) {
+      nfd::ControlParameters parameters;
+      parameters.setName(SERVER_DISCOVERY_PREFIX)
+              .setFaceId(faceStatus.getFaceId())
+              .setCost(SERVER_DISCOVERY_ROUTE_COST)
+              .setExpirationPeriod(SERVER_DISCOVERY_ROUTE_EXPIRATION);
+
+      m_controller->start<nfd::RibRegisterCommand>(
+        parameters,
+        [this] (const nfd::ControlParameters&) {
+          ++m_nRegSuccess;
+          afterReg();
+        },
+        [this, faceStatus] (const nfd::ControlResponse& resp) {
+          std::cerr << "NDND (Client): Error " << resp.getCode() << " when registering hub discovery prefix "
+                    << "for face " << faceStatus.getFaceId() << " (" << faceStatus.getRemoteUri()
+                    << "): " << resp.getText() << std::endl;
+          ++m_nRegFailure;
+          afterReg();
+        });
+    }
+  }
+
+  void
+  afterReg()
+  {
+    if (m_nRegSuccess + m_nRegFailure < m_nRegs) {
+      return; // continue waiting
+    }
+    if (m_nRegSuccess > 0) {
+      this->setStrategy();
+    } else {
+      std::cout << "NDND (Client): Cannot register hub discovery prefix for any face" << endl;
+      exit(1);
+    }
+  }
+
+  void
+  setStrategy()
+  {
+    nfd::ControlParameters parameters;
+    parameters.setName(SERVER_DISCOVERY_PREFIX)
+              .setStrategy("/localhost/nfd/strategy/multicast"),
+
+    m_controller->start<nfd::StrategyChoiceSetCommand>(
+    parameters,
+    bind(&NDNDClient::requestServerData, this),
+    [this] (const nfd::ControlResponse& resp) {
+      std::cout << "NDND (Client): Error " << to_string(resp.getCode()) << " when setting multicast strategy: " <<
+                 resp.getText() << endl;
+    });
+  }
+
+  void
+  requestServerData()
+  {
     Name name("/ndn/nd/arrival");
     name.append((uint8_t*)&m_IP, sizeof(m_IP)).append((uint8_t*)&m_port, sizeof(m_port));
     name.appendNumber(m_prefix.size()).append(m_prefix).appendTimestamp();
 
     Interest interest(name);
-    interest.setInterestLifetime(30_s);
+    interest.setInterestLifetime(SERVER_DISCOVERY_INTEREST_LIFETIME);
     interest.setMustBeFresh(true);
     interest.setNonce(4);
-    interest.setCanBePrefix(false); 
+    //interest.setCanBePrefix(false);
+    interest.setCanBePrefix(true);
 
     cout << "NDND (Client): Arrival Interest: " << interest << endl;
 
-    m_face.expressInterest(interest, nullptr, bind(&NDNDClient::onNack, this, _1, _2), //no expectation
+    m_face.expressInterest(interest,
+                           bind(&NDNDClient::onSubData, this, _1, _2),
+                           bind(&NDNDClient::onNack, this, _1, _2), //no expectation
                            nullptr); //no expectation
   }
 
@@ -131,9 +209,9 @@ public:
 
   void sendSubInterest()
   {
-    // Wait for face to ND Server to be registered in NFD
-    if (!is_ready)
+    if (!m_have_server) {
       return;
+    }
     Name name("/ndn/nd");
     name.appendTimestamp();
     Interest interest(name);
@@ -157,13 +235,17 @@ public:
     auto pResult = reinterpret_cast<const RESULT*>(data.getContent().value());
     int iNo = 1;
     Name name;
+    char ipStr[256];
 
     while((uint8_t*)pResult < data.getContent().value() + dataSize){
       m_len = sizeof(RESULT);
+      char *tIp = inet_ntoa(*(in_addr*)(pResult->IpAddr));
+      int ipLen = strlen(tIp)+1;
+      memcpy(ipStr, tIp, ipLen>255?255:ipLen);
       printf("-----%2d-----\n", iNo);
-      printf("IP: %s\n", inet_ntoa(*(in_addr*)(pResult->IpAddr)));
+      printf("IP: %s\n", ipStr);
       std::stringstream ss;
-      ss << "udp4://" << inet_ntoa(*(in_addr*)(pResult->IpAddr)) << ':' << ntohs(pResult->Port);
+      ss << "udp4://" << ipStr << ':' << ntohs(pResult->Port);
       printf("Port: %hu\n", ntohs(pResult->Port));
 
       auto result = Block::fromBuffer(pResult->NamePrefix, data.getContent().value() + dataSize - pResult->NamePrefix);
@@ -176,14 +258,17 @@ public:
 
       m_uri_to_prefix[ss.str()] = name.toUri();
       cout << "URI: " << ss.str() << endl;
-
       // Do not register route to myself
-      if (strcmp(inet_ntoa(*(in_addr*)(pResult->IpAddr)), inet_ntoa(m_IP)) == 0) {
+      if (strcmp(ipStr, inet_ntoa(m_IP)) == 0) {
         cout << "My IP address returned" << endl;
         continue;
       }
+      if (SERVER_PREFIX.isPrefixOf(name)) {
+        m_have_server = true;
+      }
 
       addFace(ss.str());
+
       setStrategy(name.toUri(), BEST_ROUTE);
     }
   }
@@ -192,6 +277,11 @@ public:
   {
     std::cout << "received Nack with reason " << nack.getReason()
               << " for interest " << interest << std::endl;
+    if (SERVER_PREFIX.isPrefixOf(interest.getName())) {
+      m_scheduler->schedule(time::seconds(3), [this] {
+        sendArrivalInterest();
+      });
+    }
   }
 
   void onTimeout(const Interest& interest)
@@ -199,8 +289,7 @@ public:
     std::cout << "Timeout " << interest << std::endl;
   }
 
-  void onRegisterRouteDataReply(const Interest& interest, const Data& data,
-                                bool is_server_route)
+  void onRegisterRouteDataReply(const Interest& interest, const Data& data)
   {
     Block response_block = data.getContent().blockFromValue();
     response_block.parse();
@@ -237,13 +326,6 @@ public:
       std::cout << "Origin: " << origin << std::endl;
       std::cout << "Route cost: " << route_cost << std::endl;
       std::cout << "Flags: " << flags << std::endl;
-
-      if (is_server_route) {
-        is_ready = true;
-        std::cout << "NDND (Client): Bootstrap succeeded\n";
-      }
-
-      is_ready = true;
     }
     else {
       std::cout << "\nRegistration of route failed." << std::endl;
@@ -252,11 +334,10 @@ public:
   }
 
   void onAddFaceDataReply(const Interest& interest, const Data& data,
-                          const string& uri, bool is_server_face) 
+                          const string& uri) 
   {
     short response_code;
     char response_text[1000] = {0};
-    char buf[1000]           = {0};   // For parsing
     int face_id;                      // Store faceid for deletion of face
     Block response_block = data.getContent().blockFromValue();
     response_block.parse();
@@ -276,15 +357,10 @@ public:
                 << face_id << "): " << uri << std::endl;
 
       auto it = m_uri_to_prefix.find(uri);
-      if (is_server_face) {
-        registerRoute(Name("/ndn/nd"), face_id, 10, is_server_face);
-        m_server_faceid = face_id;
-      }
-      else if (it != m_uri_to_prefix.end()) {
-        registerRoute(it->second, face_id, 0, is_server_face);
-        registerRoute(it->second, m_server_faceid, 10, is_server_face);
-      }
-      else {
+      if (it != m_uri_to_prefix.end()) {
+        registerRoute(it->second, face_id, 0);
+        //registerRoute(it->second, m_server_faceid, 10, is_server_face);
+      } else {
 	      std::cerr << "Failed to find prefix for uri " << uri << std::endl;
       }
 
@@ -321,13 +397,13 @@ public:
               << face_id << ")" << std::endl;
   }
 
-  void addFace(const string& uri, bool is_server_face = false) 
+  void addFace(const string& uri) 
   {
     printf("NDND (Client): Adding face: %s\n", uri.c_str());
     Interest interest = prepareFaceCreationInterest(uri, m_keyChain);
     m_face.expressInterest(
       interest,
-      bind(&NDNDClient::onAddFaceDataReply, this, _1, _2, uri, is_server_face),
+      bind(&NDNDClient::onAddFaceDataReply, this, _1, _2, uri),
       bind(&NDNDClient::onNack, this, _1, _2),
       bind(&NDNDClient::onTimeout, this, _1));
   }
@@ -372,7 +448,7 @@ public:
   void setIP() 
   {
     struct ifaddrs *ifaddr, *ifa;
-    int family, s;
+    int s;
     char host[NI_MAXHOST];
     char netmask[NI_MAXHOST];
     if (getifaddrs(&ifaddr) == -1) {
@@ -405,20 +481,23 @@ public:
   }
 
 public:
-  bool is_ready = false;    // Ready after creating face and route to ND server
   Face m_face;
   KeyChain m_keyChain;
+  nfd::Controller *m_controller;
   Name m_prefix;
   Name m_server_prefix;
   in_addr m_IP;
   in_addr m_submask;
   Scheduler *m_scheduler;
   in_addr m_server_IP;
-  int m_server_faceid;
   uint16_t m_port;
   uint8_t m_buffer[4096];
   size_t m_len;
   std::map<std::string, std::string> m_uri_to_prefix;
+  int m_nRegs = 0;
+  int m_nRegSuccess = 0;
+  int m_nRegFailure = 0;
+  bool m_have_server = false;
 };
 
 
@@ -462,8 +541,14 @@ private:
 
 int
 main(int argc, char** argv)
-{
+{ 
+  if (argc < 2) {
+      printf("usage: %s /prefix\n", argv[0]);
+      printf("    /prefix: the ndn name for this client\n");
+      return 1;
+  }
   Options opt;
+  opt.m_prefix = argv[1];
   Program program(opt);
   program.m_client->m_face.processEvents();
 }

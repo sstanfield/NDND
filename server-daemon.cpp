@@ -11,6 +11,7 @@
 #include <ifaddrs.h>
 #include <chrono>
 #include <iostream>
+//#include <optional>
 
 namespace ndn {
 namespace ndnd {
@@ -25,6 +26,8 @@ getFaceUri(const DBEntry& entry)
   return result;
 }
 
+//std::optional<std::reference_wrapper<DBEntry&>>
+//std::optional<DBEntry&>
 DBEntry&
 NDServer::findEntry(const Name& name)
 {
@@ -35,6 +38,22 @@ NDServer::findEntry(const Name& name)
     }
     ++it;
   }
+  //return std::nullopt;
+std::cout << "WTAF!";
+exit(1);
+}
+
+bool
+NDServer::hasEntry(const Name& name)
+{
+  for (auto it = m_db.begin(); it != m_db.end();) {
+    bool is_Prefix = it->prefix.isPrefixOf(name);
+    if (is_Prefix) {
+      return true;
+    }
+    ++it;
+  }
+  return false;
 }
 
 void
@@ -60,6 +79,9 @@ NDServer::subscribeBack(const std::string& url)
         });
         return;
       }
+
+
+
       m_face.expressInterest(interest,
                             std::bind(&NDServer::onSubData, this, _2),
                             std::bind(&NDServer::onNack, this, _1, _2),
@@ -92,7 +114,7 @@ NDServer::parseInterest(const Interest& interest, DBEntry& entry)
 {
   // identify a Arrival Interest
   Name name = interest.getName();
-  for (int i = 0; i < name.size(); i++)
+  for (unsigned int i = 0; i < name.size(); i++)
   {
     Name::Component component = name.get(i);
     int ret = component.compare(Name::Component("arrival"));
@@ -110,7 +132,7 @@ NDServer::parseInterest(const Interest& interest, DBEntry& entry)
       int begin = i + 3;
       Name prefix;
       uint64_t name_size = comp.toNumber();
-      for (int j = 0; j < name_size; j++) {
+      for (unsigned int j = 0; j < name_size; j++) {
         prefix.append(name.get(begin + j + 1));
       }
       entry.prefix = prefix;
@@ -119,7 +141,10 @@ NDServer::parseInterest(const Interest& interest, DBEntry& entry)
 
       // AddRoute and Subscribe Back
       entry.confirmed = false;
-      m_db.push_back(entry);
+      if (!hasEntry(prefix)) {
+        // don't add dups, XXX should do an update here.
+        m_db.push_back(entry);
+      }
       addRoute(getFaceUri(entry), entry);
       subscribeBack(entry.prefix.toUri());
       return 1;
@@ -132,6 +157,8 @@ NDServer::parseInterest(const Interest& interest, DBEntry& entry)
 void
 NDServer::run()
 {
+  setIP();
+  m_port = htons(6363); // default
   m_ttl = 30 * 1000;
   m_scheduler = new Scheduler(m_face.getIoService());
   m_face.processEvents();
@@ -159,33 +186,57 @@ NDServer::onInterest(const Interest& request)
   DBEntry entry;
   int ret = parseInterest(request, entry);
   if (ret) {
-    // arrival interest
+    Buffer contentBuf;
+    using namespace std::chrono;
+    milliseconds ms = duration_cast<milliseconds>(system_clock::now().time_since_epoch());
+    struct RESULT result;
+    result.V4 = 1;
+    memcpy(result.IpAddr, &m_IP, 16);
+    result.Port = m_port;
+
+    for (unsigned int i = 0; i < sizeof(struct RESULT); i++) {
+      contentBuf.push_back(*((uint8_t*)&result + i));
+    }
+    Name prefix("/ndn/nd");
+    auto block = prefix.wireEncode();
+    for (size_t i =0; i < block.size(); i++) {
+      contentBuf.push_back(*(block.wire() + i));
+    }
+
+    auto data = make_shared<Data>(request.getName());
+    data->setContent(contentBuf.get<uint8_t>(), contentBuf.size());
+
+
+
+    m_keyChain.sign(*data, security::SigningInfo(security::SigningInfo::SIGNER_TYPE_SHA256));
+    data->setFreshnessPeriod(time::milliseconds(4000));
+    m_face.put(*data);
+    std::cout << "NDND (RV): Arrival respond: " << std::endl << *data << std::endl;
     return;
   }
   Buffer contentBuf;
-  bool isUpdate = false;
   int counter = 0;
   for (auto it = m_db.begin(); it != m_db.end();) {
+std::cout << "XXXXX db entry count: " << counter << std::endl;
     const auto& item = *it;
     using namespace std::chrono;
     milliseconds ms = duration_cast<milliseconds>(system_clock::now().time_since_epoch());
-    if (item.tp + item.ttl < ms.count()) {
+    //if (item.tp + item.ttl < ms.count()) {
       // if the entry is out-of-date, erase it
-      std::cout << "NDND (RV): Entry out date: " << it->prefix << std::endl;
-      it = m_db.erase(it);
-    }
-    else {
+    //  std::cout << "NDND (RV): Entry out date: " << it->prefix << std::endl;
+      //it = m_db.erase(it);
+    //} else {
       // else, add the entry to the reply if it matches
       struct RESULT result;
       result.V4 = item.v4? 1 : 0;
       memcpy(result.IpAddr, item.ip, 16);
       result.Port = item.port;
 
-      for (int i = 0; i < sizeof(struct RESULT); i++) {
+      for (unsigned int i = 0; i < sizeof(struct RESULT); i++) {
         contentBuf.push_back(*((uint8_t*)&result + i));
       }
       auto block = item.prefix.wireEncode();
-      for (int i =0; i < block.size(); i++) {
+      for (size_t i =0; i < block.size(); i++) {
         contentBuf.push_back(*(block.wire() + i));
       }
       std::cout << "NDND (RV): Pushing Back one record " << std::endl;
@@ -193,14 +244,13 @@ NDServer::onInterest(const Interest& request)
       ++it;
       if (counter > 10)
         break;
-    }
+    //}
   }
 
   auto data = make_shared<Data>(request.getName());
   if (contentBuf.size() > 0) {
     data->setContent(contentBuf.get<uint8_t>(), contentBuf.size());
-  }
-  else {
+  } else {
     return;
   }
 
@@ -328,6 +378,42 @@ NDServer::onData(const Data& data, DBEntry& entry)
     }
 
   }
+}
+
+void
+NDServer::setIP() 
+{
+  struct ifaddrs *ifaddr, *ifa;
+  int s;
+  char host[NI_MAXHOST];
+  char netmask[NI_MAXHOST];
+  if (getifaddrs(&ifaddr) == -1) {
+      perror("getifaddrs");
+      exit(EXIT_FAILURE);
+  }
+
+  for (ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
+    if (ifa->ifa_addr == NULL)
+      continue;
+
+    s=getnameinfo(ifa->ifa_addr,sizeof(struct sockaddr_in),host, NI_MAXHOST, NULL, 0, NI_NUMERICHOST);
+    s=getnameinfo(ifa->ifa_netmask,sizeof(struct sockaddr_in),netmask, NI_MAXHOST, NULL, 0, NI_NUMERICHOST);
+
+    if (ifa->ifa_addr->sa_family==AF_INET) {
+      if (s != 0) {
+        printf("getnameinfo() failed: %s\n", gai_strerror(s));
+        exit(EXIT_FAILURE);
+      }
+      if (ifa->ifa_name[0] == 'l' && ifa->ifa_name[1] == 'o')   // Loopback
+        continue;
+      printf("\tInterface : <%s>\n", ifa->ifa_name);
+      printf("\t  Address : <%s>\n", host);
+      inet_aton(host, &m_IP);
+      inet_aton(netmask, &m_submask);
+      break;
+    }
+  }
+  freeifaddrs(ifaddr);
 }
 
 } // namespace ndnd

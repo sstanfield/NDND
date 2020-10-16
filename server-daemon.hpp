@@ -2,6 +2,7 @@
 // EMAIL: zhiyi@cs.ucla.edu
 // License: LGPL v3.0
 
+#include <arpa/inet.h>
 #include <ndn-cxx/name.hpp>
 #include <ndn-cxx/face.hpp>
 #include <ndn-cxx/util/scheduler.hpp>
@@ -51,6 +52,9 @@ private:
   DBEntry&
   findEntry(const Name& name);
 
+  bool
+  hasEntry(const Name& name);
+
   void
   removeRoute(DBEntry& entry);
 
@@ -61,6 +65,9 @@ private:
   void 
   onNack(const Interest& interest, const lp::Nack& nack);
 
+  void
+  setIP();
+
 private:
   Name m_prefix;
   uint64_t m_ttl;
@@ -68,6 +75,10 @@ private:
   KeyChain m_keyChain;
   Scheduler *m_scheduler;
   std::list<DBEntry> m_db;
+
+  in_addr m_IP;
+  in_addr m_submask;
+  uint16_t m_port;
 };
 
 } // namespace ndnd
