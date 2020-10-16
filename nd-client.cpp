@@ -21,6 +21,7 @@
 
 #include "nd-packet-format.h"
 #include "nfdc-helpers.h"
+#include "server-daemon.hpp"
 
 using namespace ndn;
 using namespace ndn::ndnd;
@@ -28,7 +29,7 @@ using namespace std;
 
 const Name SERVER_PREFIX("/ndn/nd");
 const Name SERVER_DISCOVERY_PREFIX("/ndn/nd/arrival");
-const uint64_t SERVER_DISCOVERY_ROUTE_COST(1);
+const uint64_t SERVER_DISCOVERY_ROUTE_COST(0);
 const time::milliseconds SERVER_DISCOVERY_ROUTE_EXPIRATION = 30_s;
 const time::milliseconds SERVER_DISCOVERY_INTEREST_LIFETIME = 4_s;
 
@@ -64,6 +65,101 @@ public:
   }
 
   // TODO: remove face on SIGINT, SIGTERM
+
+  void
+  registerArrivePrefix()
+  {
+    if (m_arrive_listen) {
+      return;
+    }
+    Name prefix("/ndn/nd");
+    std::cout << "NDND (Client): Registering arrive prefix " << prefix.toUri() << std::endl;
+    m_arrivePrefixId = m_face.setInterestFilter(InterestFilter(prefix),
+                                              bind(&NDNDClient::onArriveInterest, this, _2),
+                                              bind(&NDNDClient::onRegArriveSuccess, this, _1),
+                                              bind(&NDNDClient::onRegArriveFail, this, _1, _2));
+    m_arrive_listen = true;
+  }
+
+  void onRegArriveSuccess(const Name& name) {
+    std::cout << "NDND (Client): Registered arrive prefix " << name.toUri() << std::endl;
+  }
+
+  void onRegArriveFail(const Name& name, const std::string& error) {
+    std::cout << "NDND (Client): Failed to register arrive prefix " << name.toUri() << " reason: " << error << std::endl;
+  }
+
+  void
+  onArriveInterest(const Interest& request)
+  {
+    // First setup the face and route the pier.
+    Name name = request.getName();
+    uint8_t ip[16];
+    uint16_t port;
+    char ipStr[256];
+    for (unsigned int i = 0; i < name.size(); i++) {
+      Name::Component component = name.get(i);
+      int ret = component.compare(Name::Component("arrival"));
+      if (ret == 0) {
+        Name::Component comp;
+        // getIP
+        comp = name.get(i + 1);
+        memcpy(ip, comp.value(), sizeof(ip));
+        char *tIp = inet_ntoa(*(in_addr*)(ip));
+        int ipLen = strlen(tIp)+1;
+        memcpy(ipStr, tIp, ipLen>255?255:ipLen);
+        // getPort
+        comp = name.get(i + 2);
+        memcpy(&port, comp.value(), sizeof(port));
+        // getName
+        comp = name.get(i + 3);
+        int begin = i + 3;
+        Name prefix;
+        uint64_t name_size = comp.toNumber();
+        for (unsigned int j = 0; j < name_size; j++) {
+          prefix.append(name.get(begin + j + 1));
+        }
+
+        std::stringstream ss;
+        ss << "udp4://" << ipStr << ':' << ntohs(port);
+        auto ssStr = ss.str();
+        std::cout << "NDND (Client): Arrival Name is " << prefix.toUri() << " from " << ssStr << std::endl;
+
+        m_uri_to_prefix[ssStr] = prefix.toUri();
+        // Do not register route to myself
+        if (strcmp(ipStr, inet_ntoa(m_IP)) == 0) {
+          cout << "NDND (Client): My IP address returned - potential security issue..." << endl;
+          continue;
+        }
+        addFace(ssStr);
+      }
+    }
+
+    // Then send back our info.
+    Buffer contentBuf;
+    using namespace std::chrono;
+    milliseconds ms = duration_cast<milliseconds>(system_clock::now().time_since_epoch());
+    struct RESULT result;
+    result.V4 = 1;
+    memcpy(result.IpAddr, &m_IP, 16);
+    result.Port = m_port;
+
+    for (unsigned int i = 0; i < sizeof(struct RESULT); i++) {
+      contentBuf.push_back(*((uint8_t*)&result + i));
+    }
+    auto block = m_prefix.wireEncode();
+    for (size_t i =0; i < block.size(); i++) {
+      contentBuf.push_back(*(block.wire() + i));
+    }
+
+    auto data = make_shared<Data>(request.getName());
+    data->setContent(contentBuf.get<uint8_t>(), contentBuf.size());
+
+    m_keyChain.sign(*data, security::SigningInfo(security::SigningInfo::SIGNER_TYPE_SHA256));
+    data->setFreshnessPeriod(time::milliseconds(4000));
+    m_face.put(*data);
+    std::cout << "NDND (Client): Arrival respond: " << std::endl << *data << std::endl;
+  }
 
   void registerRoute(const Name& route_name, int face_id,
                      int cost = 0) 
@@ -194,8 +290,25 @@ public:
 
     m_face.expressInterest(interest,
                            bind(&NDNDClient::onSubData, this, _1, _2),
-                           bind(&NDNDClient::onNack, this, _1, _2), //no expectation
-                           nullptr); //no expectation
+                           bind(&NDNDClient::onNack, this, _1, _2),
+                           bind(&NDNDClient::onArriveTimeout, this, _1));
+      /*m_scheduler->schedule(time::seconds(3), [this] {
+    if (!m_have_server) {
+      registerArrivePrefix();
+    }
+      });*/
+  }
+
+  void onArriveTimeout(const Interest& interest)
+  {
+    std::cout << "Arrive Timeout (I am all alone?) " << interest << std::endl;
+    if (!m_have_server && !m_is_server) {
+      m_is_server = true;
+      NDServer server;// = new NDServer();
+      Name prefix("/ndn/nd");
+      server.registerPrefix(prefix);
+      server.run(m_prefix);
+    }
   }
 
   void registerSubPrefix()
@@ -271,6 +384,9 @@ public:
 
       setStrategy(name.toUri(), BEST_ROUTE);
     }
+    //if (!m_have_server) {
+    //  registerArrivePrefix();
+    //}
   }
 
   void onNack(const Interest& interest, const lp::Nack& nack)
@@ -326,8 +442,7 @@ public:
       std::cout << "Origin: " << origin << std::endl;
       std::cout << "Route cost: " << route_cost << std::endl;
       std::cout << "Flags: " << flags << std::endl;
-    }
-    else {
+    } else {
       std::cout << "\nRegistration of route failed." << std::endl;
       std::cout << "Status text: " << response_text << std::endl;
     }
@@ -364,8 +479,7 @@ public:
 	      std::cerr << "Failed to find prefix for uri " << uri << std::endl;
       }
 
-    }
-    else {
+    } else {
       std::cout << "\nCreation of face failed." << std::endl;
       std::cout << "Status text: " << response_text << std::endl;
     }
@@ -498,6 +612,9 @@ public:
   int m_nRegSuccess = 0;
   int m_nRegFailure = 0;
   bool m_have_server = false;
+  bool m_arrive_listen = false;
+  RegisteredPrefixHandle m_arrivePrefixId;
+  bool m_is_server = false;
 };
 
 
@@ -509,20 +626,23 @@ public:
   {
     // Init client
     m_client = new NDNDClient(m_options.m_prefix,
-                              m_options.server_prefix, 
+                              m_options.server_prefix,
                               m_options.server_ip);
 
     m_scheduler = new Scheduler(m_client->m_face.getIoService());
+    //m_client->registerArrivePrefix();
     m_client->registerSubPrefix();
     m_client->sendArrivalInterest();
     loop();
   }
 
   void loop() {
-    m_client->sendSubInterest();
-    m_scheduler->schedule(time::seconds(3), [this] {
-      loop();
-    });
+    if (!m_client->m_is_server) {
+      m_client->sendSubInterest();
+      m_scheduler->schedule(time::seconds(30), [this] {
+        loop();
+      });
+    }
   }
 
   ~Program() {

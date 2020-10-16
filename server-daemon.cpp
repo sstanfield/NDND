@@ -155,11 +155,20 @@ NDServer::parseInterest(const Interest& interest, DBEntry& entry)
 }
 
 void
-NDServer::run()
+NDServer::run(const Name& client_prefix)
 {
   setIP();
   m_port = htons(6363); // default
   m_ttl = 30 * 1000;
+
+  m_client_prefix = client_prefix;
+  DBEntry entry;
+  memcpy(entry.ip, &m_IP, 16);
+  entry.port = m_port;
+  entry.prefix = client_prefix;
+  entry.confirmed = true;
+  m_db.push_back(entry);
+
   m_scheduler = new Scheduler(m_face.getIoService());
   m_face.processEvents();
 }
@@ -217,7 +226,6 @@ NDServer::onInterest(const Interest& request)
   Buffer contentBuf;
   int counter = 0;
   for (auto it = m_db.begin(); it != m_db.end();) {
-std::cout << "XXXXX db entry count: " << counter << std::endl;
     const auto& item = *it;
     using namespace std::chrono;
     milliseconds ms = duration_cast<milliseconds>(system_clock::now().time_since_epoch());

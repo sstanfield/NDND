@@ -47,7 +47,7 @@ public:
   run()
   {
     server.registerPrefix(m_options.prefix);
-    server.run();
+    server.run(Name("/ndn/nd/server"));
   }
 
 private:

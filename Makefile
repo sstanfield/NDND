@@ -14,7 +14,7 @@ nd-server: $(SOURCE_OBJS)
 	$(CXX) $(CXXFLAGS) -o $@ server-daemon.o nd-server.o $(LIBS)
 
 nd-client: $(SOURCE_OBJS)
-	$(CXX) $(CXXFLAGS) -o $@ nd-client.o $(LIBS)
+	$(CXX) $(CXXFLAGS) -o $@ nd-client.o server-daemon.o $(LIBS)
 
 # nd-app: $(SOURCE_OBJS)
 # 	$(CXX) $(CXXFLAGS) -o $@ nd-app.o $(LIBS)

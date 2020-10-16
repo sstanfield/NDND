@@ -3,6 +3,8 @@
 NOTE: This is a fork with the intent or allowing neighbor discovery using
 multi-cast and no server (ie, clients can find each other with no other support).
 This readme has NOT been updated for those changes yet.
+Also if a client can not find a server it will become the server.  This is
+VERY brittle right now (race conditions, etc).
 
 ## An Overview
 

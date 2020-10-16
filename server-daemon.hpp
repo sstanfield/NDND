@@ -31,7 +31,7 @@ public:
   registerPrefix(const Name& prefix);
 
   void
-  run();
+  run(const Name& client_prefix);
 
 private:
   // if subscribe interest, return 0; if arrival interest, return 1
@@ -70,6 +70,7 @@ private:
 
 private:
   Name m_prefix;
+  Name m_client_prefix;
   uint64_t m_ttl;
   Face m_face;
   KeyChain m_keyChain;
