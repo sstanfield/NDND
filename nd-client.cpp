@@ -22,6 +22,7 @@
 #include "nd-packet-format.h"
 #include "nfdc-helpers.h"
 #include "server-daemon.hpp"
+#include "multicast.h"
 
 using namespace ndn;
 using namespace ndn::ndnd;
@@ -58,10 +59,11 @@ public:
     , m_server_prefix(server_prefix)
   {
     m_scheduler = new Scheduler(m_face.getIoService());
-    m_controller = new nfd::Controller(m_face, m_keyChain);
+    m_controller = std::make_shared<nfd::Controller>(m_face, m_keyChain);
     setIP();
     m_port = htons(6363); // default
     inet_aton(server_ip.c_str(), &m_server_IP);
+    m_multicast = std::make_unique<MulticastInterest>(m_face, m_controller);
   }
 
   // TODO: remove face on SIGINT, SIGTERM
@@ -75,23 +77,68 @@ public:
     Name prefix("/ndn/nd");
     std::cout << "NDND (Client): Registering arrive prefix " << prefix.toUri() << std::endl;
     m_arrivePrefixId = m_face.setInterestFilter(InterestFilter(prefix),
-                                              bind(&NDNDClient::onArriveInterest, this, _2),
+                                              bind(&NDNDClient::onArriveInterest, this, _2, true),
                                               bind(&NDNDClient::onRegArriveSuccess, this, _1),
                                               bind(&NDNDClient::onRegArriveFail, this, _1, _2));
     m_arrive_listen = true;
   }
 
   void onRegArriveSuccess(const Name& name) {
-    std::cout << "NDND (Client): Registered arrive prefix " << name.toUri() << std::endl;
+    std::cout << "NDND (Client): Registered arrive prefix "
+              << name.toUri()
+              << std::endl;
   }
 
   void onRegArriveFail(const Name& name, const std::string& error) {
-    std::cout << "NDND (Client): Failed to register arrive prefix " << name.toUri() << " reason: " << error << std::endl;
+    std::cout << "NDND (Client): Failed to register arrive prefix "
+              << name.toUri()
+              << " reason: "
+              << error
+              << std::endl;
   }
 
-  void
-  onArriveInterest(const Interest& request)
+  void sendArrivalInterest() {
+      if (m_multicast->is_error()) {
+          cout << "NDND (Client): Multicast error, exiting" << endl;
+          exit(1);
+      }
+      if (m_multicast->is_ready()) {
+          Name name("/ndn/nd/arrival");
+          name.append((uint8_t * ) & m_IP, sizeof(m_IP)).append((uint8_t * ) & m_port, sizeof(m_port));
+          name.appendNumber(m_prefix.size()).append(m_prefix).appendTimestamp();
+
+          Interest interest(name);
+          interest.setInterestLifetime(SERVER_DISCOVERY_INTEREST_LIFETIME);
+          interest.setMustBeFresh(true);
+          interest.setNonce(4);
+          //interest.setCanBePrefix(false);
+          interest.setCanBePrefix(true);
+
+          cout << "NDND (Client): Arrival Interest: " << interest << endl;
+
+          m_multicast->expressInterest(interest,
+                                bind(&NDNDClient::onArriveData, this, _1, _2),
+                                bind(&NDNDClient::onNack, this, _1, _2),
+                                bind(&NDNDClient::onArriveTimeout, this, _1));
+      } else {
+          cout << "NDND (Client): Arrival Interest, multicast not ready will retry" << endl;
+          m_scheduler->schedule(time::seconds(3), [this] {
+              sendArrivalInterest();
+          });
+      }
+  }
+
+  void onArriveData(const Interest& interest, const Data& data) {
+      cout << "Arrive data " << interest.getName() << endl;
+  }
+
+  void onArriveTimeout(const Interest& interest) {
+      std::cout << "Arrive Timeout (I am all alone?) " << interest << std::endl;
+  }
+
+  void onArriveInterest(const Interest& request, const bool send_back)
   {
+      cout << "Got arrive interest " << request.getName() << endl;
     // First setup the face and route the pier.
     Name name = request.getName();
     uint8_t ip[16];
@@ -99,8 +146,10 @@ public:
     char ipStr[256];
     for (unsigned int i = 0; i < name.size(); i++) {
       Name::Component component = name.get(i);
-      int ret = component.compare(Name::Component("arrival"));
-      if (ret == 0) {
+      bool ret = (component.compare(Name::Component("arrival")) == 0) ||
+                 (component.compare(Name::Component("nd-info")) == 0);
+      if (ret) {
+          cout << "Working on arrival interest" << endl;
         Name::Component comp;
         // getIP
         comp = name.get(i + 1);
@@ -128,46 +177,36 @@ public:
         m_uri_to_prefix[ssStr] = prefix.toUri();
         // Do not register route to myself
         if (strcmp(ipStr, inet_ntoa(m_IP)) == 0) {
-          cout << "NDND (Client): My IP address returned - potential security issue..." << endl;
+          cout << "NDND (Client): My IP address returned - send back nothing" << endl;
+          auto data = make_shared<Data>(request.getName());
+
+          m_keyChain.sign(*data, security::SigningInfo(security::SigningInfo::SIGNER_TYPE_SHA256));
+          data->setFreshnessPeriod(time::milliseconds(4000));
+          m_face.put(*data);
           continue;
         }
-        addFace(ssStr);
+        addFace(ssStr, send_back);
       }
     }
-
-    // Then send back our info.
-    Buffer contentBuf;
-    using namespace std::chrono;
-    milliseconds ms = duration_cast<milliseconds>(system_clock::now().time_since_epoch());
-    struct RESULT result;
-    result.V4 = 1;
-    memcpy(result.IpAddr, &m_IP, 16);
-    result.Port = m_port;
-
-    for (unsigned int i = 0; i < sizeof(struct RESULT); i++) {
-      contentBuf.push_back(*((uint8_t*)&result + i));
-    }
-    auto block = m_prefix.wireEncode();
-    for (size_t i =0; i < block.size(); i++) {
-      contentBuf.push_back(*(block.wire() + i));
-    }
-
-    auto data = make_shared<Data>(request.getName());
-    data->setContent(contentBuf.get<uint8_t>(), contentBuf.size());
-
-    m_keyChain.sign(*data, security::SigningInfo(security::SigningInfo::SIGNER_TYPE_SHA256));
-    data->setFreshnessPeriod(time::milliseconds(4000));
-    m_face.put(*data);
-    std::cout << "NDND (Client): Arrival respond: " << std::endl << *data << std::endl;
   }
 
+    void onResponseTimeout(const Interest& interest)
+    {
+        // XXX removeRoute(findEntry(interest.getName()));
+    }
+
+    void onResponseData(const Data& data)
+    {
+        std::cout << "NDND (Client): Record Updated/Confirmed from " << data.getName() << std::endl;
+    }
+
   void registerRoute(const Name& route_name, int face_id,
-                     int cost = 0) 
+                     int cost, const bool send_back)
   {
     Interest interest = prepareRibRegisterInterest(route_name, face_id, m_keyChain, cost);
     m_face.expressInterest(
       interest,
-      bind(&NDNDClient::onRegisterRouteDataReply, this, _1, _2),
+      bind(&NDNDClient::onRegisterRouteDataReply, this, _1, _2, send_back),
       bind(&NDNDClient::onNack, this, _1, _2),
       bind(&NDNDClient::onTimeout, this, _1));
   }
@@ -195,136 +234,18 @@ public:
     cout << "NDND (Client): Publishing Data: " << *data << endl;
   }
   
-  void sendArrivalInterest()
-  {
-    nfd::FaceQueryFilter filter;
-    filter.setLinkType(nfd::LINK_TYPE_MULTI_ACCESS);
-
-    m_controller->fetch<nfd::FaceQueryDataset>(
-      filter,
-      bind(&NDNDClient::registerMultiPrefix, this, _1),
-      [this] (uint32_t code, const std::string& reason) {
-        std::cout << "NDND (Client): Error " << to_string(code) << " when querying multi-access faces: " << reason << endl;
-        exit(1);
-      });
-  }
-
-  void registerMultiPrefix(const std::vector<nfd::FaceStatus>& dataset) {
-    if (dataset.empty()) {
-      std::cout << "NDND (Client): No multi-access faces available" << endl;
-      exit(1);
-    }
-
-    m_nRegs = dataset.size();
-    m_nRegSuccess = 0;
-    m_nRegFailure = 0;
-
-    for (const auto& faceStatus : dataset) {
-      nfd::ControlParameters parameters;
-      parameters.setName(SERVER_DISCOVERY_PREFIX)
-              .setFaceId(faceStatus.getFaceId())
-              .setCost(SERVER_DISCOVERY_ROUTE_COST)
-              .setExpirationPeriod(SERVER_DISCOVERY_ROUTE_EXPIRATION);
-
-      m_controller->start<nfd::RibRegisterCommand>(
-        parameters,
-        [this] (const nfd::ControlParameters&) {
-          ++m_nRegSuccess;
-          afterReg();
-        },
-        [this, faceStatus] (const nfd::ControlResponse& resp) {
-          std::cerr << "NDND (Client): Error " << resp.getCode() << " when registering hub discovery prefix "
-                    << "for face " << faceStatus.getFaceId() << " (" << faceStatus.getRemoteUri()
-                    << "): " << resp.getText() << std::endl;
-          ++m_nRegFailure;
-          afterReg();
-        });
-    }
-  }
-
-  void
-  afterReg()
-  {
-    if (m_nRegSuccess + m_nRegFailure < m_nRegs) {
-      return; // continue waiting
-    }
-    if (m_nRegSuccess > 0) {
-      this->setStrategy();
-    } else {
-      std::cout << "NDND (Client): Cannot register hub discovery prefix for any face" << endl;
-      exit(1);
-    }
-  }
-
-  void
-  setStrategy()
-  {
-    nfd::ControlParameters parameters;
-    parameters.setName(SERVER_DISCOVERY_PREFIX)
-              .setStrategy("/localhost/nfd/strategy/multicast"),
-
-    m_controller->start<nfd::StrategyChoiceSetCommand>(
-    parameters,
-    bind(&NDNDClient::requestServerData, this),
-    [this] (const nfd::ControlResponse& resp) {
-      std::cout << "NDND (Client): Error " << to_string(resp.getCode()) << " when setting multicast strategy: " <<
-                 resp.getText() << endl;
-    });
-  }
-
-  void
-  requestServerData()
-  {
-    Name name("/ndn/nd/arrival");
-    name.append((uint8_t*)&m_IP, sizeof(m_IP)).append((uint8_t*)&m_port, sizeof(m_port));
-    name.appendNumber(m_prefix.size()).append(m_prefix).appendTimestamp();
-
-    Interest interest(name);
-    interest.setInterestLifetime(SERVER_DISCOVERY_INTEREST_LIFETIME);
-    interest.setMustBeFresh(true);
-    interest.setNonce(4);
-    //interest.setCanBePrefix(false);
-    interest.setCanBePrefix(true);
-
-    cout << "NDND (Client): Arrival Interest: " << interest << endl;
-
-    m_face.expressInterest(interest,
-                           bind(&NDNDClient::onSubData, this, _1, _2),
-                           bind(&NDNDClient::onNack, this, _1, _2),
-                           bind(&NDNDClient::onArriveTimeout, this, _1));
-      /*m_scheduler->schedule(time::seconds(3), [this] {
-    if (!m_have_server) {
-      registerArrivePrefix();
-    }
-      });*/
-  }
-
-  void onArriveTimeout(const Interest& interest)
-  {
-    std::cout << "Arrive Timeout (I am all alone?) " << interest << std::endl;
-    if (!m_have_server && !m_is_server) {
-      m_is_server = true;
-      NDServer server;// = new NDServer();
-      Name prefix("/ndn/nd");
-      server.registerPrefix(prefix);
-      server.run(m_prefix);
-    }
-  }
-
-  void registerSubPrefix()
-  {
+  void registerSubPrefix() {
     Name name(m_prefix);
     name.append("nd-info");
-    m_face.setInterestFilter(InterestFilter(name), bind(&NDNDClient::onSubInterest, this, _2), nullptr);
+    m_face.setInterestFilter(InterestFilter(name),
+                             //bind(&NDNDClient::onSubInterest, this, _2),
+                             bind(&NDNDClient::onArriveInterest, this, _2, false),
+                             nullptr);
     cout << "NDND (Client): Register Prefix: " << name << endl;
   }
 
 
-  void sendSubInterest()
-  {
-    if (!m_have_server) {
-      return;
-    }
+  void sendSubInterest() {
     Name name("/ndn/nd");
     name.appendTimestamp();
     Interest interest(name);
@@ -340,8 +261,7 @@ public:
   }
 
 // private:
-  void onSubData(const Interest& interest, const Data& data)
-  {
+  void onSubData(const Interest& interest, const Data& data) {
     std::cout << data << std::endl;
 
     size_t dataSize = data.getContent().value_size();
@@ -376,17 +296,11 @@ public:
         cout << "My IP address returned" << endl;
         continue;
       }
-      if (SERVER_PREFIX.isPrefixOf(name)) {
-        m_have_server = true;
-      }
 
-      addFace(ss.str());
+      addFace(ss.str(), false);
 
       setStrategy(name.toUri(), BEST_ROUTE);
     }
-    //if (!m_have_server) {
-    //  registerArrivePrefix();
-    //}
   }
 
   void onNack(const Interest& interest, const lp::Nack& nack)
@@ -405,7 +319,7 @@ public:
     std::cout << "Timeout " << interest << std::endl;
   }
 
-  void onRegisterRouteDataReply(const Interest& interest, const Data& data)
+  void onRegisterRouteDataReply(const Interest& interest, const Data& data, const bool send_data)
   {
     Block response_block = data.getContent().blockFromValue();
     response_block.parse();
@@ -442,6 +356,41 @@ public:
       std::cout << "Origin: " << origin << std::endl;
       std::cout << "Route cost: " << route_cost << std::endl;
       std::cout << "Flags: " << flags << std::endl;
+        if (send_data) {
+            // Then send back our info.
+            Buffer contentBuf;
+            using namespace std::chrono;
+            milliseconds ms = duration_cast<milliseconds>(system_clock::now().time_since_epoch());
+            struct RESULT result;
+            result.V4 = 1;
+            memcpy(result.IpAddr, &m_IP, 16);
+            result.Port = m_port;
+
+            for (unsigned int i = 0; i < sizeof(struct RESULT); i++) {
+                contentBuf.push_back(*((uint8_t * ) & result + i));
+            }
+            auto block = m_prefix.wireEncode();
+            for (size_t i = 0; i < block.size(); i++) {
+                contentBuf.push_back(*(block.wire() + i));
+            }
+
+            Name prefix(route_name);
+            prefix.append("nd-info");
+            prefix.append((uint8_t*)&m_IP, sizeof(m_IP)).append((uint8_t*)&m_port, sizeof(m_port));
+            prefix.appendNumber(m_prefix.size()).append(m_prefix).appendTimestamp();
+
+            std::cout << "NDND (Client): Subscribe Back to " << prefix << std::endl;
+            Interest interest(prefix);
+            interest.setInterestLifetime(30_s);
+            interest.setMustBeFresh(true);
+            interest.setNonce(4);
+            interest.setCanBePrefix(false);
+
+            m_face.expressInterest(interest,
+                                   std::bind(&NDNDClient::onResponseData, this, _2),
+                                   std::bind(&NDNDClient::onNack, this, _1, _2),
+                                   std::bind(&NDNDClient::onResponseTimeout, this, _1));
+        }
     } else {
       std::cout << "\nRegistration of route failed." << std::endl;
       std::cout << "Status text: " << response_text << std::endl;
@@ -449,7 +398,7 @@ public:
   }
 
   void onAddFaceDataReply(const Interest& interest, const Data& data,
-                          const string& uri) 
+                          const string& uri, const bool send_data)
   {
     short response_code;
     char response_text[1000] = {0};
@@ -473,7 +422,7 @@ public:
 
       auto it = m_uri_to_prefix.find(uri);
       if (it != m_uri_to_prefix.end()) {
-        registerRoute(it->second, face_id, 0);
+        registerRoute(it->second, face_id, 0, send_data);
         //registerRoute(it->second, m_server_faceid, 10, is_server_face);
       } else {
 	      std::cerr << "Failed to find prefix for uri " << uri << std::endl;
@@ -511,13 +460,13 @@ public:
               << face_id << ")" << std::endl;
   }
 
-  void addFace(const string& uri) 
+  void addFace(const string& uri, const bool send_data)
   {
     printf("NDND (Client): Adding face: %s\n", uri.c_str());
     Interest interest = prepareFaceCreationInterest(uri, m_keyChain);
     m_face.expressInterest(
       interest,
-      bind(&NDNDClient::onAddFaceDataReply, this, _1, _2, uri),
+      bind(&NDNDClient::onAddFaceDataReply, this, _1, _2, uri, send_data),
       bind(&NDNDClient::onNack, this, _1, _2),
       bind(&NDNDClient::onTimeout, this, _1));
   }
@@ -597,7 +546,7 @@ public:
 public:
   Face m_face;
   KeyChain m_keyChain;
-  nfd::Controller *m_controller;
+  std::shared_ptr<nfd::Controller> m_controller;
   Name m_prefix;
   Name m_server_prefix;
   in_addr m_IP;
@@ -608,13 +557,9 @@ public:
   uint8_t m_buffer[4096];
   size_t m_len;
   std::map<std::string, std::string> m_uri_to_prefix;
-  int m_nRegs = 0;
-  int m_nRegSuccess = 0;
-  int m_nRegFailure = 0;
-  bool m_have_server = false;
   bool m_arrive_listen = false;
   RegisteredPrefixHandle m_arrivePrefixId;
-  bool m_is_server = false;
+  std::unique_ptr<MulticastInterest> m_multicast;
 };
 
 
@@ -630,19 +575,21 @@ public:
                               m_options.server_ip);
 
     m_scheduler = new Scheduler(m_client->m_face.getIoService());
-    //m_client->registerArrivePrefix();
+    m_client->registerArrivePrefix();
     m_client->registerSubPrefix();
     m_client->sendArrivalInterest();
-    loop();
+    //loop();
+    while (1) {
+        cout << "LOOPING" << endl;
+        m_client->m_face.processEvents();
+    }
   }
 
   void loop() {
-    if (!m_client->m_is_server) {
-      m_client->sendSubInterest();
-      m_scheduler->schedule(time::seconds(30), [this] {
-        loop();
-      });
-    }
+    m_client->sendSubInterest();
+    m_scheduler->schedule(time::seconds(30), [this] {
+      loop();
+    });
   }
 
   ~Program() {
