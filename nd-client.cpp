@@ -21,7 +21,6 @@
 
 #include "nd-packet-format.h"
 #include "nfdc-helpers.h"
-#include "server-daemon.hpp"
 #include "multicast.h"
 
 using namespace ndn;
@@ -49,6 +48,14 @@ public:
   string server_ip;
 };
 
+class DBEntry
+{
+public:
+    uint8_t ip[16];
+    uint16_t port;
+    Name prefix;
+    int faceId;
+};
 
 class NDNDClient{
 public:
@@ -68,13 +75,54 @@ public:
 
   // TODO: remove face on SIGINT, SIGTERM
 
+    bool hasEntry(const Name& name) {
+        for (auto it = m_db.begin(); it != m_db.end();) {
+            bool is_Prefix = it->prefix.isPrefixOf(name);
+            if (is_Prefix) {
+                return true;
+            }
+            ++it;
+        }
+        return false;
+    }
+
     void registerClientPrefix() {
         Name name(m_prefix);
         name.append("nd-info");
         cout << "NDND (Client): Registering Client Prefix: " << name << endl;
         m_face.setInterestFilter(InterestFilter(name),
-                //bind(&NDNDClient::onSubInterest, this, _2),
                                  bind(&NDNDClient::onArriveInterest, this, _2, false),
+                                 [this](const Name& name) {
+                                     std::cout << "NDND (Client): Registered client prefix "
+                                               << name.toUri()
+                                               << std::endl;
+                                     // Now register keep alive prefix.
+                                     registerKeepAlivePrefix();
+                                 },
+                                 [this](const Name& name, const std::string& error) {
+                                     std::cout << "NDND (Client): Failed to register client prefix "
+                                               << name.toUri()
+                                               << " reason: "
+                                               << error
+                                               << std::endl;
+                                     m_scheduler->schedule(time::seconds(3), [this] {
+                                         registerClientPrefix();
+                                     });
+                                 });
+    }
+
+    void registerKeepAlivePrefix() {
+        Name name(m_prefix);
+        name.append("nd-keepalive");
+        cout << "NDND (Client): Registering KeepAlive Prefix: " << name << endl;
+        m_face.setInterestFilter(InterestFilter(name),
+                                 [this](const InterestFilter& filter, const Interest& request) {
+                                     cout << "NDND (Client): Got keep alive " << endl;
+                                     auto data = make_shared<Data>(request.getName());
+                                     m_keyChain.sign(*data, security::SigningInfo(security::SigningInfo::SIGNER_TYPE_SHA256));
+                                     data->setFreshnessPeriod(time::milliseconds(4000));
+                                     m_face.put(*data);
+                                 },
                                  [this](const Name& name) {
                                      std::cout << "NDND (Client): Registered client prefix "
                                                << name.toUri()
@@ -89,7 +137,7 @@ public:
                                                << error
                                                << std::endl;
                                      m_scheduler->schedule(time::seconds(3), [this] {
-                                         registerClientPrefix();
+                                         registerKeepAlivePrefix();
                                      });
                                  });
     }
@@ -220,7 +268,11 @@ public:
           cout << "NDND (Client): My IP address returned - send back nothing" << endl;
           continue;
         }
-        addFaceAndPrefix(ssStr, prefix, send_back);
+        DBEntry entry;
+        memcpy(entry.ip, ip, sizeof(ip));
+        entry.port = port;
+        entry.prefix = prefix;
+        addFaceAndPrefix(ssStr, prefix, entry, send_back);
       }
     }
   }
@@ -281,60 +333,41 @@ public:
     cout << "NDND (Client): Publishing Data: " << *data << endl;
   }
 
-  void sendSubInterest() {
-    Name name("/ndn/nd");
-    name.appendTimestamp();
-    Interest interest(name);
-    interest.setInterestLifetime(30_s);
-    interest.setMustBeFresh(true);
-    interest.setNonce(4);
-    interest.setCanBePrefix(false);
+  void sendKeepAliveInterest() {
+      for (auto it = m_db.begin(); it != m_db.end(); it = m_db.erase(it)) {
+          const DBEntry item = *it;
+          Name name(item.prefix);
+          name.append("nd-keepalive");
+          name.appendTimestamp();
+          Interest interest(name);
+          interest.setInterestLifetime(30_s);
+          interest.setMustBeFresh(true);
+          interest.setNonce(4);
+          interest.setCanBePrefix(false);
 
-    m_face.expressInterest(interest,
-                           bind(&NDNDClient::onSubData, this, _1, _2),
-                           bind(&NDNDClient::onNack, this, _1, _2),
-                           bind(&NDNDClient::onTimeout, this, _1));
-  }
-
-  void onSubData(const Interest& interest, const Data& data) {
-    std::cout << data << std::endl;
-
-    size_t dataSize = data.getContent().value_size();
-    auto pResult = reinterpret_cast<const RESULT*>(data.getContent().value());
-    int iNo = 1;
-    Name name;
-    char ipStr[256];
-
-    while((uint8_t*)pResult < data.getContent().value() + dataSize){
-      m_len = sizeof(RESULT);
-      char *tIp = inet_ntoa(*(in_addr*)(pResult->IpAddr));
-      int ipLen = strlen(tIp)+1;
-      memcpy(ipStr, tIp, ipLen>255?255:ipLen);
-      printf("-----%2d-----\n", iNo);
-      printf("IP: %s\n", ipStr);
-      std::stringstream ss;
-      ss << "udp4://" << ipStr << ':' << ntohs(pResult->Port);
-      printf("Port: %hu\n", ntohs(pResult->Port));
-
-      auto result = Block::fromBuffer(pResult->NamePrefix, data.getContent().value() + dataSize - pResult->NamePrefix);
-      name.wireDecode(std::get<1>(result));
-      printf("Name Prefix: %s\n", name.toUri().c_str());
-      m_len += std::get<1>(result).size();
-
-      pResult = reinterpret_cast<const RESULT*>(((uint8_t*)pResult) + m_len);
-      iNo ++;
-
-      cout << "URI: " << ss.str() << endl;
-      // Do not register route to myself
-      if (strcmp(ipStr, inet_ntoa(m_IP)) == 0) {
-        cout << "My IP address returned" << endl;
-        continue;
+          m_face.expressInterest(interest,
+                                 [this, item](const Interest& interest, const Data& data) {
+                                     cout
+                                             << "NDND (Client): Arrive keep alive data "
+                                             << interest.getName() << endl;
+                                     m_db.push_back(item);
+                                 },
+                                 [this](const Interest& interest, const lp::Nack& nack) {
+                                     // Humm, log this and retry...
+                                     std::cout
+                                             << "NDND (Client): received keep alive Nack with reason "
+                                             << nack.getReason()
+                                             << " for interest " << interest << std::endl;
+                                     // XXX TODO- shutdown face/route.
+                                 },
+                                 [](const Interest& interest) {
+                                     // This is odd (we should get a packet from ourselves)...
+                                     std::cout
+                                             << "NDND (Client): Keep alive timeout "
+                                             << interest << std::endl;
+                                     // XXX TODO- shutdown face/route.
+                                 });
       }
-
-      addFaceAndPrefix(ss.str(), name, false);
-
-      setStrategy(name.toUri(), BEST_ROUTE);
-    }
   }
 
   void onNack(const Interest& interest, const lp::Nack& nack)
@@ -458,7 +491,8 @@ public:
   }
 
   void onAddFaceDataReply(const Interest& interest, const Data& data,
-                          const string& uri, const Name prefix, const bool send_data)
+                          const string& uri, const Name prefix, DBEntry entry,
+                          const bool send_data)
   {
     short response_code;
     char response_text[1000] = {0};
@@ -480,12 +514,16 @@ public:
       std::cout << response_code << " " << response_text << ": Added Face (FaceId: "
                 << face_id << "): " << uri << std::endl;
 
+      entry.faceId = face_id;
+      if (!hasEntry(entry.prefix)) {
+          m_db.push_back(entry);
+      }
       registerRoute(prefix, face_id, 0, send_data);
     } else {
       std::cout << "\nCreation of face failed." << std::endl;
       std::cout << "Status text: " << response_text << std::endl;
-      m_scheduler->schedule(time::seconds(3), [this, uri, prefix, send_data] {
-          addFaceAndPrefix(uri, prefix, send_data);
+      m_scheduler->schedule(time::seconds(3), [this, uri, prefix, entry, send_data] {
+          addFaceAndPrefix(uri, prefix, entry, send_data);
       });
     }
   }
@@ -516,30 +554,30 @@ public:
               << face_id << ")" << std::endl;
   }
 
-  void addFaceAndPrefix(const string& uri, const Name prefix, const bool send_data)
+  void addFaceAndPrefix(const string& uri, const Name prefix, DBEntry entry, const bool send_data)
   {
     cout << "NDND (Client): Adding face: " << uri << endl;
     Interest interest = prepareFaceCreationInterest(uri, m_keyChain);
       m_face.expressInterest(
               interest,
-              bind(&NDNDClient::onAddFaceDataReply, this, _1, _2, uri, prefix, send_data),
-              [this, uri, prefix, send_data](const Interest& interest, const lp::Nack& nack)
+              bind(&NDNDClient::onAddFaceDataReply, this, _1, _2, uri, prefix, entry, send_data),
+              [this, uri, prefix, entry, send_data](const Interest& interest, const lp::Nack& nack)
               {
                   std::cout
                           << "NDND (Client): Received Nack with reason "
                           << nack.getReason()
                           << " for interest " << interest << std::endl;
-                  m_scheduler->schedule(time::seconds(3), [this, uri, prefix, send_data] {
-                      addFaceAndPrefix(uri, prefix, send_data);
+                  m_scheduler->schedule(time::seconds(3), [this, uri, prefix, entry, send_data] {
+                      addFaceAndPrefix(uri, prefix, entry, send_data);
                   });
               },
-              [this, uri, prefix, send_data](const Interest& interest)
+              [this, uri, prefix, entry, send_data](const Interest& interest)
               {
                   std::cout
                           << "NDND (Client): Received timeout when adding face "
                           << interest << std::endl;
-                  m_scheduler->schedule(time::seconds(3), [this, uri, prefix, send_data] {
-                      addFaceAndPrefix(uri, prefix, send_data);
+                  m_scheduler->schedule(time::seconds(3), [this, uri, prefix, entry, send_data] {
+                      addFaceAndPrefix(uri, prefix, entry, send_data);
                   });
               });
   }
@@ -631,6 +669,7 @@ public:
   size_t m_len;
   RegisteredPrefixHandle m_arrivePrefixId;
   std::unique_ptr<MulticastInterest> m_multicast;
+  std::list<DBEntry> m_db;
 };
 
 
@@ -645,26 +684,28 @@ public:
                               m_options.server_prefix,
                               m_options.server_ip);
 
-    //m_scheduler = make_unique<Scheduler>(m_client->m_face.getIoService());
+    m_scheduler = make_unique<Scheduler>(m_client->m_face.getIoService());
     m_client->registerClientPrefix();
-    //loop();
-  }
-
-  void loop() {
-    /*m_client->sendSubInterest();
-    m_scheduler->schedule(time::seconds(30), [this] {
-      loop();
-    });*/
+    loop();
+    //m_client->m_face.processEvents();
+    // XXX This while is probably dumb...
       while (1) {
           cout << "LOOPING" << endl;
           m_client->m_face.processEvents();
       }
   }
 
+  void loop() {
+    m_client->sendKeepAliveInterest();
+    m_scheduler->schedule(time::seconds(30), [this] {
+      loop();
+    });
+  }
+
 private:
   std::unique_ptr<NDNDClient> m_client;
   const Options m_options;
-  //std::unique_ptr<Scheduler> m_scheduler;
+  std::unique_ptr<Scheduler> m_scheduler;
   //boost::asio::io_service m_io_service;
 };
 
