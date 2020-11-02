@@ -2,38 +2,37 @@
 // Created by sstanf on 10/29/20.
 //
 
-#ifndef NDND_MULTICAST_H
-#define NDND_MULTICAST_H
+#ifndef AHND_MULTICAST_H
+#define AHND_MULTICAST_H
 
-#include <ndn-cxx/face.hpp>
 #include <ndn-cxx/mgmt/nfd/controller.hpp>
 
-namespace ndn {
-    namespace ndnd {
+namespace ahnd {
 
-        class MulticastInterest {
-        private:
-            Face &m_face;
-            std::shared_ptr<nfd::Controller> m_controller;
-            bool m_ready;
-            bool m_error;
+    class MulticastInterest {
+    private:
+        ndn::Face &m_face;
+        std::shared_ptr<ndn::nfd::Controller> m_controller;
+        ndn::Name m_prefix;
+        bool m_ready;
+        bool m_error;
 
-            void requestReady();
-            void setStrategy();
-            void afterReg(int nRegSuccess);
-            void registerMultiPrefix(const std::vector <nfd::FaceStatus> &dataset);
+        void requestReady();
+        void setStrategy();
+        void afterReg(int nRegSuccess);
+        void registerMultiPrefix(const std::vector <ndn::nfd::FaceStatus> &dataset);
 
-        public:
-            MulticastInterest(Face &face,
-                              std::shared_ptr <nfd::Controller> controller);
-            bool is_ready() { return m_ready; }
-            bool is_error() { return m_error; }
-            void expressInterest(const Interest interest,
-                                 const DataCallback &afterSatisfied,
-                                 const NackCallback &afterNacked,
-                                 const TimeoutCallback &afterTimeout);
-        };
-    }
+    public:
+        MulticastInterest(ndn::Face &face,
+                          std::shared_ptr <ndn::nfd::Controller> controller,
+                          ndn::Name prefix);
+        bool is_ready() { return m_ready; }
+        bool is_error() { return m_error; }
+        void expressInterest(const ndn::Interest interest,
+                             const ndn::DataCallback &afterSatisfied,
+                             const ndn::NackCallback &afterNacked,
+                             const ndn::TimeoutCallback &afterTimeout);
+    };
 }
 
 #endif //NDND_MULTICAST_H
