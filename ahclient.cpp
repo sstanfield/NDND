@@ -15,8 +15,8 @@ const uint64_t SERVER_DISCOVERY_ROUTE_COST(0);
 const ndn::time::milliseconds SERVER_DISCOVERY_ROUTE_EXPIRATION = 30_s;
 const ndn::time::milliseconds SERVER_DISCOVERY_INTEREST_LIFETIME = 4_s;
 
-static ndn::Block make_rib_interest_parameter(const ndn::Name &route_name,
-                                              int face_id) {
+static ndn::Block makeRibInterestParameter(const ndn::Name &route_name,
+                                           int face_id) {
 	auto block = ndn::makeEmptyBlock(CONTROL_PARAMETERS);
 	ndn::Block route_name_block = route_name.wireEncode();
 	ndn::Block face_id_block =
@@ -46,8 +46,7 @@ static ndn::Interest prepareRibRegisterInterest(const ndn::Name &route_name,
                                                 ndn::KeyChain &keychain,
                                                 int cost = 0) {
 	ndn::Name name("/localhost/nfd/rib/register");
-	ndn::Block control_params =
-	    make_rib_interest_parameter(route_name, face_id);
+	ndn::Block control_params = makeRibInterestParameter(route_name, face_id);
 	name.append(control_params);
 
 	ndn::security::CommandInterestSigner signer(keychain);
@@ -123,8 +122,8 @@ AHClient::AHClient(const Name &prefix, const Name &broadcast_prefix)
 
 bool AHClient::hasEntry(const Name &name) {
 	for (auto it = m_db.begin(); it != m_db.end();) {
-		bool is_Prefix = it->prefix.isPrefixOf(name);
-		if (is_Prefix) {
+		bool is_prefix = it->prefix.isPrefixOf(name);
+		if (is_prefix) {
 			return true;
 		}
 		++it;
@@ -259,7 +258,7 @@ void AHClient::onArriveInterest(const Interest &request, const bool send_back) {
 	Name name = request.getName();
 	uint8_t ip[16];
 	uint16_t port;
-	char ipStr[256];
+	char ip_str[256];
 	for (unsigned int i = 0; i < name.size(); i++) {
 		Name::Component component = name.get(i);
 		bool ret = (component.compare(Name::Component("arrival")) == 0) ||
@@ -269,9 +268,9 @@ void AHClient::onArriveInterest(const Interest &request, const bool send_back) {
 			// getIP
 			comp = name.get(i + 1);
 			memcpy(ip, comp.value(), sizeof(ip));
-			char *tIp = inet_ntoa(*(in_addr *)(ip));
-			int ipLen = strlen(tIp) + 1;
-			memcpy(ipStr, tIp, ipLen > 255 ? 255 : ipLen);
+			char *t_ip = inet_ntoa(*(in_addr *)(ip));
+			int ip_len = strlen(t_ip) + 1;
+			memcpy(ip_str, t_ip, ip_len > 255 ? 255 : ip_len);
 			// getPort
 			comp = name.get(i + 2);
 			memcpy(&port, comp.value(), sizeof(port));
@@ -285,10 +284,10 @@ void AHClient::onArriveInterest(const Interest &request, const bool send_back) {
 			}
 
 			std::stringstream ss;
-			ss << "udp4://" << ipStr << ':' << ntohs(port);
-			auto ssStr = ss.str();
+			ss << "udp4://" << ip_str << ':' << ntohs(port);
+			auto ss_str = ss.str();
 			std::cout << "AH Client: Arrival Name is " << prefix.toUri()
-			          << " from " << ssStr << std::endl;
+			          << " from " << ss_str << std::endl;
 
 			// Send back empty data to confirm I am here...
 			auto data = make_shared<Data>(request.getName());
@@ -298,7 +297,7 @@ void AHClient::onArriveInterest(const Interest &request, const bool send_back) {
 			data->setFreshnessPeriod(time::milliseconds(4000));
 			m_face.put(*data);
 			// Do not register route to myself
-			if (strcmp(ipStr, inet_ntoa(m_IP)) == 0) {
+			if (strcmp(ip_str, inet_ntoa(m_IP)) == 0) {
 				cout << "AH Client: My IP address returned - send back nothing"
 				     << endl;
 				continue;
@@ -307,7 +306,7 @@ void AHClient::onArriveInterest(const Interest &request, const bool send_back) {
 			memcpy(entry.ip, ip, sizeof(ip));
 			entry.port = port;
 			entry.prefix = prefix;
-			addFaceAndPrefix(ssStr, prefix, entry, send_back);
+			addFaceAndPrefix(ss_str, prefix, entry, send_back);
 		}
 	}
 }
@@ -345,14 +344,14 @@ void AHClient::registerRoute(const Name &route_name, int face_id, int cost,
 
 void AHClient::onSubInterest(const Interest &subInterest) {
 	// reply data with IP confirmation
-	Buffer contentBuf;
+	Buffer content_buf;
 	for (unsigned int i = 0; i < sizeof(m_IP); i++) {
-		contentBuf.push_back(*((uint8_t *)&m_IP + i));
+		content_buf.push_back(*((uint8_t *)&m_IP + i));
 	}
 
 	auto data = make_shared<Data>(subInterest.getName());
-	if (contentBuf.size() > 0) {
-		data->setContent(contentBuf.get<uint8_t>(), contentBuf.size());
+	if (content_buf.size() > 0) {
+		data->setContent(content_buf.get<uint8_t>(), content_buf.size());
 	} else {
 		return;
 	}
@@ -613,17 +612,17 @@ void AHClient::onSetStrategyDataReply(const Interest &interest,
                                       const Data &data) {
 	Block response_block = data.getContent().blockFromValue();
 	response_block.parse();
-	int responseCode =
+	int response_code =
 	    readNonNegativeIntegerAs<int>(response_block.get(STATUS_CODE));
-	std::string responseTxt = readString(response_block.get(STATUS_TEXT));
+	std::string response_txt = readString(response_block.get(STATUS_TEXT));
 
-	if (responseCode == OK) {
+	if (response_code == OK) {
 		Block status_parameter_block = response_block.get(CONTROL_PARAMETERS);
 		status_parameter_block.parse();
 		std::cout << "\nSet strategy succeeded." << std::endl;
 	} else {
 		std::cout << "\nSet strategy failed." << std::endl;
-		std::cout << "Status text: " << responseTxt << std::endl;
+		std::cout << "Status text: " << response_txt << std::endl;
 	}
 }
 

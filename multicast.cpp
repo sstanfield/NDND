@@ -65,8 +65,8 @@ void MulticastInterest::setStrategy() {
 	        });
 }
 
-void MulticastInterest::afterReg(int nRegSuccess) {
-	if (nRegSuccess > 0) {
+void MulticastInterest::afterReg(int n_reg_success) {
+	if (n_reg_success > 0) {
 		setStrategy();
 	} else {
 		cout << "AHND (Multicast): Cannot register hub discovery prefix for "
@@ -83,36 +83,36 @@ void MulticastInterest::registerMultiPrefix(
 		m_error = true;
 	}
 
-	int nRegs = dataset.size();
-	std::shared_ptr<int> nRegSuccess = std::make_shared<int>(0);
-	std::shared_ptr<int> nRegFailure = std::make_shared<int>(0);
+	int n_regs = dataset.size();
+	std::shared_ptr<int> n_reg_success = std::make_shared<int>(0);
+	std::shared_ptr<int> n_reg_failure = std::make_shared<int>(0);
 
-	for (const auto &faceStatus : dataset) {
+	for (const auto &face_status : dataset) {
 		nfd::ControlParameters parameters;
 		parameters.setName(m_prefix)
-		    .setFaceId(faceStatus.getFaceId())
+		    .setFaceId(face_status.getFaceId())
 		    .setCost(DISCOVERY_ROUTE_COST)
 		    .setExpirationPeriod(DISCOVERY_ROUTE_EXPIRATION);
 
 		m_controller->start<nfd::RibRegisterCommand>(
 		    parameters,
-		    [this, nRegSuccess, nRegFailure,
-		     nRegs](const nfd::ControlParameters &) {
-			    *nRegSuccess += 1;
-			    if (*nRegSuccess + *nRegFailure == nRegs) {
-				    afterReg(*nRegSuccess);
+		    [this, n_reg_success, n_reg_failure,
+		     n_regs](const nfd::ControlParameters &) {
+			    *n_reg_success += 1;
+			    if (*n_reg_success + *n_reg_failure == n_regs) {
+				    afterReg(*n_reg_success);
 			    }
 		    },
-		    [this, nRegSuccess, nRegFailure, nRegs,
-		     faceStatus](const nfd::ControlResponse &resp) {
+		    [this, n_reg_success, n_reg_failure, n_regs,
+		     face_status](const nfd::ControlResponse &resp) {
 			    std::cerr << "AHND (Multicast): Error " << resp.getCode()
 			              << " when registering hub discovery prefix "
-			              << "for face " << faceStatus.getFaceId() << " ("
-			              << faceStatus.getRemoteUri()
+			              << "for face " << face_status.getFaceId() << " ("
+			              << face_status.getRemoteUri()
 			              << "): " << resp.getText() << std::endl;
-			    *nRegFailure += 1;
-			    if (*nRegSuccess + *nRegFailure == nRegs) {
-				    afterReg(*nRegSuccess);
+			    *n_reg_failure += 1;
+			    if (*n_reg_success + *n_reg_failure == n_regs) {
+				    afterReg(*n_reg_success);
 			    }
 		    });
 	}
