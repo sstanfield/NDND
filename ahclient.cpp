@@ -252,9 +252,12 @@ void AHClient::sendArrivalInterest() {
 void AHClient::onArriveInterest(const Interest &request, const bool send_back) {
 	// First setup the face and route the pier.
 	Name name = request.getName();
-	uint8_t ip[16];
+	std::array<uint8_t, IP_BYTES> ip;
+	ip.fill(0);
 	uint16_t port;
-	char ip_str[256];
+	const int IP_STR_LEN = 256;
+	std::array<char, IP_STR_LEN> ip_str;
+	ip_str.fill(0);
 	for (unsigned int i = 0; i < name.size(); i++) {
 		Name::Component component = name.get(i);
 		bool ret = (component.compare(Name::Component("arrival")) == 0) ||
@@ -263,10 +266,11 @@ void AHClient::onArriveInterest(const Interest &request, const bool send_back) {
 			Name::Component comp;
 			// getIP
 			comp = name.get(i + 1);
-			memcpy(ip, comp.value(), sizeof(ip));
-			char *t_ip = inet_ntoa(*(in_addr *)(ip));
+			memcpy(ip.data(), comp.value(), IP_BYTES);
+			char *t_ip = inet_ntoa(*(in_addr *)(ip.data()));
 			int ip_len = strlen(t_ip) + 1;
-			memcpy(ip_str, t_ip, ip_len > 255 ? 255 : ip_len);
+			memcpy(ip_str.data(), t_ip,
+			       ip_len >= IP_STR_LEN ? IP_STR_LEN - 1 : ip_len);
 			// getPort
 			comp = name.get(i + 2);
 			memcpy(&port, comp.value(), sizeof(port));
@@ -280,7 +284,7 @@ void AHClient::onArriveInterest(const Interest &request, const bool send_back) {
 			}
 
 			std::stringstream ss;
-			ss << "udp4://" << ip_str << ':' << ntohs(port);
+			ss << "udp4://" << ip_str.data() << ':' << ntohs(port);
 			auto ss_str = ss.str();
 			std::cout << "AH Client: Arrival Name is " << prefix.toUri()
 			          << " from " << ss_str << std::endl;
@@ -293,13 +297,14 @@ void AHClient::onArriveInterest(const Interest &request, const bool send_back) {
 			data->setFreshnessPeriod(time::milliseconds(4000));
 			m_face.put(*data);
 			// Do not register route to myself
-			if (strcmp(ip_str, inet_ntoa(m_IP)) == 0) {
+			// XXX- do better then a strcmp here...
+			if (strcmp(ip_str.data(), inet_ntoa(m_IP)) == 0) {
 				cout << "AH Client: My IP address returned - send back nothing"
 				     << endl;
 				continue;
 			}
 			DBEntry entry;
-			memcpy(entry.ip, ip, sizeof(ip));
+			entry.ip.swap(ip);
 			entry.port = port;
 			entry.prefix = prefix;
 			addFaceAndPrefix(ss_str, prefix, entry, send_back);

@@ -7,11 +7,19 @@
 
 namespace ahnd {
 
+const int IP_BYTES = 16;
+
 struct DBEntry {
-	uint8_t ip[16];
+	std::array<uint8_t, IP_BYTES> ip = {};
 	uint16_t port;
 	ndn::Name prefix;
 	int faceId;
+
+	DBEntry() {
+		ip.fill(0);
+		port = 0;
+		faceId = 0;
+	}
 };
 
 class AHClient {
@@ -20,34 +28,33 @@ class AHClient {
 	void registerPrefixes() { registerClientPrefix(); }
 	void processEvents() { m_face.processEvents(); }
 	void sendKeepAliveInterest();
-	ndn::Face &face() { return m_face; }
+	auto face() -> ndn::Face & { return m_face; }
 
   private:
-	bool hasEntry(const ndn::Name &name);
+	auto hasEntry(const ndn::Name &name) -> bool;
 	void registerClientPrefix();
 	void registerKeepAlivePrefix();
 	void registerArrivePrefix();
 	void sendArrivalInterest();
 	// Handle direct or multicast interests that contain a single remotes face
 	// and route information.
-	void onArriveInterest(const ndn::Interest &request, const bool send_back);
+	void onArriveInterest(const ndn::Interest &request, bool send_back);
 	void registerRoute(const ndn::Name &route_name, int face_id, int cost,
-	                   const bool send_data);
+	                   bool send_data);
 	void onSubInterest(const ndn::Interest &subInterest);
 	void onNack(const ndn::Interest &interest, const ndn::lp::Nack &nack);
 	void onTimeout(const ndn::Interest &interest);
 	void onRegisterRouteDataReply(const ndn::Interest &interest,
 	                              const ndn::Data &data,
 	                              const ndn::Name &route_name, int face_id,
-	                              int cost, const bool send_data);
+	                              int cost, bool send_data);
 	void onAddFaceDataReply(const ndn::Interest &interest,
 	                        const ndn::Data &data, const std::string &uri,
-	                        const ndn::Name prefix, DBEntry entry,
-	                        const bool send_data);
+	                        ndn::Name prefix, DBEntry entry, bool send_data);
 	void onDestroyFaceDataReply(const ndn::Interest &interest,
 	                            const ndn::Data &data);
-	void addFaceAndPrefix(const std::string &uri, const ndn::Name prefix,
-	                      DBEntry entry, const bool send_data);
+	void addFaceAndPrefix(const std::string &uri, ndn::Name prefix,
+	                      DBEntry entry, bool send_data);
 	void destroyFace(int face_id);
 	void onSetStrategyDataReply(const ndn::Interest &interest,
 	                            const ndn::Data &data);
