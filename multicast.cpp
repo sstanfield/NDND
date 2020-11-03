@@ -16,14 +16,15 @@ const time::milliseconds DISCOVERY_ROUTE_EXPIRATION = 30_s;
 
 MulticastInterest::MulticastInterest(
     Face &face, std::shared_ptr<nfd::Controller> controller, Name prefix)
-    : m_face(face), m_controller(controller), m_prefix(prefix) {
+    : m_face(face), m_controller(std::move(controller)),
+      m_prefix(std::move(prefix)) {
 	m_ready = false;
 	m_error = false;
 	nfd::FaceQueryFilter filter;
 	filter.setLinkType(nfd::LINK_TYPE_MULTI_ACCESS);
 
 	m_controller->fetch<nfd::FaceQueryDataset>(
-	    filter, bind(&MulticastInterest::registerMultiPrefix, this, _1),
+	    filter, [this](auto &&PH1) { registerMultiPrefix(PH1); },
 	    [this](uint32_t code, const std::string &reason) {
 		    cout << "AHND (Multicast): Error " << to_string(code)
 		         << " when querying multi-access faces: " << reason << endl;
@@ -31,7 +32,7 @@ MulticastInterest::MulticastInterest(
 	    });
 }
 
-void MulticastInterest::expressInterest(const Interest interest,
+void MulticastInterest::expressInterest(const Interest &interest,
                                         const DataCallback &afterSatisfied,
                                         const NackCallback &afterNacked,
                                         const TimeoutCallback &afterTimeout) {
@@ -56,7 +57,8 @@ void MulticastInterest::setStrategy() {
 	    "/localhost/nfd/strategy/multicast"),
 
 	    m_controller->start<nfd::StrategyChoiceSetCommand>(
-	        parameters, bind(&MulticastInterest::requestReady, this),
+	        parameters,
+	        [this](const ndn::nfd::ControlParameters &_) { requestReady(); },
 	        [this](const nfd::ControlResponse &resp) {
 		        cout << "AHND (Multicast): Error " << to_string(resp.getCode())
 		             << " when setting multicast strategy: " << resp.getText()
@@ -97,7 +99,7 @@ void MulticastInterest::registerMultiPrefix(
 		m_controller->start<nfd::RibRegisterCommand>(
 		    parameters,
 		    [this, n_reg_success, n_reg_failure,
-		     n_regs](const nfd::ControlParameters &) {
+		     n_regs](const nfd::ControlParameters &_) {
 			    *n_reg_success += 1;
 			    if (*n_reg_success + *n_reg_failure == n_regs) {
 				    afterReg(*n_reg_success);

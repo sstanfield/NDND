@@ -9,10 +9,6 @@
 using namespace ndn;
 using namespace std;
 
-// const Name SERVER_PREFIX("/ndn/nd");
-// const Name SERVER_DISCOVERY_PREFIX("/ndn/nd/arrival");
-const uint64_t SERVER_DISCOVERY_ROUTE_COST(0);
-const ndn::time::milliseconds SERVER_DISCOVERY_ROUTE_EXPIRATION = 30_s;
 const ndn::time::milliseconds SERVER_DISCOVERY_INTEREST_LIFETIME = 4_s;
 
 static ndn::Block makeRibInterestParameter(const ndn::Name &route_name,
@@ -202,11 +198,11 @@ void AHClient::registerArrivePrefix() {
 }
 
 void AHClient::sendArrivalInterest() {
-	if (m_multicast->is_error()) {
+	if (m_multicast->isError()) {
 		cout << "AH Client: Multicast error, exiting" << endl;
 		exit(1);
 	}
-	if (m_multicast->is_ready()) {
+	if (m_multicast->isReady()) {
 		Name name(m_broadcast_prefix);
 		name.append("arrival");
 		name.append((uint8_t *)&m_IP, sizeof(m_IP))
@@ -384,7 +380,7 @@ void AHClient::sendKeepAliveInterest() {
 			         << interest.getName() << endl;
 			    m_db.push_back(item);
 		    },
-		    [this](const Interest &interest, const lp::Nack &nack) {
+		    [](const Interest &interest, const lp::Nack &nack) {
 			    // Humm, log this and retry...
 			    std::cout << "AH Client: received keep alive Nack with reason "
 			              << nack.getReason() << " for interest " << interest

@@ -63,8 +63,6 @@ class AHClient {
 	in_addr m_submask;
 	std::unique_ptr<ndn::Scheduler> m_scheduler;
 	uint16_t m_port;
-	uint8_t m_buffer[4096];
-	size_t m_len;
 	ndn::RegisteredPrefixHandle m_arrivePrefixId;
 	std::unique_ptr<ahnd::MulticastInterest> m_multicast;
 	std::list<DBEntry> m_db;

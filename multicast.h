@@ -19,16 +19,16 @@ class MulticastInterest {
 
 	void requestReady();
 	void setStrategy();
-	void afterReg(int nRegSuccess);
+	void afterReg(int n_reg_success);
 	void registerMultiPrefix(const std::vector<ndn::nfd::FaceStatus> &dataset);
 
   public:
 	MulticastInterest(ndn::Face &face,
 	                  std::shared_ptr<ndn::nfd::Controller> controller,
 	                  ndn::Name prefix);
-	bool is_ready() { return m_ready; }
-	bool is_error() { return m_error; }
-	void expressInterest(const ndn::Interest interest,
+	auto isReady() const { return m_ready; }
+	auto isError() const { return m_error; }
+	void expressInterest(const ndn::Interest &interest,
 	                     const ndn::DataCallback &afterSatisfied,
 	                     const ndn::NackCallback &afterNacked,
 	                     const ndn::TimeoutCallback &afterTimeout);

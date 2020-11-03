@@ -42,7 +42,7 @@ style:
 		    { key: readability-identifier-naming.FunctionCase, value: camelBack },\
 		    { key: readability-identifier-naming.VariableCase, value: lower_case },\
 		    { key: readability-identifier-naming.GlobalConstantCase, value: UPPER_CASE }\
-		    ]}" "$(SRC_DIR)/$$src" ; \
+		    ]}" -header-filter=".*" "$(SRC_DIR)/$$src" ; \
 	done
 	@echo "Done"
 
