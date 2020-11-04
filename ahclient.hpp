@@ -10,7 +10,7 @@ namespace ahnd {
 const int IP_BYTES = 16;
 
 struct DBEntry {
-	std::array<uint8_t, IP_BYTES> ip = {};
+	std::array<uint8_t, IP_BYTES> ip{};
 	uint16_t port;
 	ndn::Name prefix;
 	int faceId;
@@ -31,6 +31,7 @@ class AHClient {
 	auto face() -> ndn::Face & { return m_face; }
 
   private:
+	void appendIpPort(ndn::Name &name);
 	auto hasEntry(const ndn::Name &name) -> bool;
 	void registerClientPrefix();
 	void registerKeepAlivePrefix();
@@ -42,8 +43,9 @@ class AHClient {
 	void registerRoute(const ndn::Name &route_name, int face_id, int cost,
 	                   bool send_data);
 	void onSubInterest(const ndn::Interest &subInterest);
-	void onNack(const ndn::Interest &interest, const ndn::lp::Nack &nack);
-	void onTimeout(const ndn::Interest &interest);
+	static void onNack(const ndn::Interest &interest,
+	                   const ndn::lp::Nack &nack);
+	static void onTimeout(const ndn::Interest &interest);
 	void onRegisterRouteDataReply(const ndn::Interest &interest,
 	                              const ndn::Data &data,
 	                              const ndn::Name &route_name, int face_id,
@@ -67,8 +69,7 @@ class AHClient {
 	std::shared_ptr<ndn::nfd::Controller> m_controller;
 	ndn::Name m_prefix;
 	ndn::Name m_broadcast_prefix;
-	in_addr m_IP;
-	in_addr m_submask;
+	in_addr m_IP{0};
 	std::unique_ptr<ndn::Scheduler> m_scheduler;
 	uint16_t m_port;
 	ndn::RegisteredPrefixHandle m_arrivePrefixId;

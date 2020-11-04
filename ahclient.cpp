@@ -20,6 +20,7 @@ static auto makeRibInterestParameter(const ndn::Name &route_name,
 	const ndn::Block &route_name_block = route_name.wireEncode();
 	ndn::Block face_id_block =
 	    ndn::makeNonNegativeIntegerBlock(FACE_ID, face_id);
+	// NOLINTNEXTLINE(cppcoreguidelines-avoid-magic-numbers,readability-magic-numbers)
 	ndn::Block origin_block = ndn::makeNonNegativeIntegerBlock(ORIGIN, 0xFF);
 	ndn::Block cost_block = ndn::makeNonNegativeIntegerBlock(COST, 0);
 	ndn::Block flags_block = ndn::makeNonNegativeIntegerBlock(FLAGS, 0x01);
@@ -121,6 +122,14 @@ AHClient::AHClient(Name prefix, Name broadcast_prefix, int port)
 	                                                  m_broadcast_prefix);
 }
 
+void AHClient::appendIpPort(Name &name) {
+	// This does some unsafe C casting.
+	// NOLINTNEXTLINE: unsafe C style cast
+	name.append((uint8_t *)&m_IP, sizeof(m_IP))
+	    // NOLINTNEXTLINE: unsafe C style cast
+	    .append((uint8_t *)&m_port, sizeof(m_port));
+}
+
 auto AHClient::hasEntry(const Name &name) -> bool {
 	for (auto it = m_db.begin(); it != m_db.end();) {
 		bool is_prefix = it->prefix.isPrefixOf(name);
@@ -210,8 +219,7 @@ void AHClient::sendArrivalInterest() {
 	if (m_multicast->isReady()) {
 		Name name(m_broadcast_prefix);
 		name.append("arrival");
-		name.append((uint8_t *)&m_IP, sizeof(m_IP))
-		    .append((uint8_t *)&m_port, sizeof(m_port));
+		appendIpPort(name);
 		name.appendNumber(m_prefix.size()).append(m_prefix).appendTimestamp();
 
 		Interest interest(name);
@@ -260,8 +268,8 @@ void AHClient::onArriveInterest(const Interest &request, const bool send_back) {
 	std::array<uint8_t, IP_BYTES> ip{};
 	ip.fill(0);
 	uint16_t port = 0;
-	const int IP_STR_LEN = 256;
-	std::array<char, IP_STR_LEN> ip_str{};
+	const int ip_str_len = 256;
+	std::array<char, ip_str_len> ip_str{};
 	ip_str.fill(0);
 	for (unsigned int i = 0; i < name.size(); i++) {
 		Name::Component const &component = name.get(i);
@@ -272,16 +280,17 @@ void AHClient::onArriveInterest(const Interest &request, const bool send_back) {
 			// getIP
 			comp = name.get(i + 1);
 			memcpy(ip.data(), comp.value(), IP_BYTES);
+			// NOLINTNEXTLINE(cppcoreguidelines-pro-type-cstyle-cast)
 			char *t_ip = inet_ntoa(*(in_addr *)(ip.data()));
-			int ip_len = strlen(t_ip) + 1;
+			unsigned long ip_len = strlen(t_ip) + 1;
 			memcpy(ip_str.data(), t_ip,
-			       ip_len >= IP_STR_LEN ? IP_STR_LEN - 1 : ip_len);
+			       ip_len >= ip_str_len ? ip_str_len - 1 : ip_len);
 			// getPort
 			comp = name.get(i + 2);
 			memcpy(&port, comp.value(), sizeof(port));
 			// getName
 			comp = name.get(i + 3);
-			int begin = i + 3;
+			unsigned int begin = i + 3;
 			Name prefix;
 			uint64_t name_size = comp.toNumber();
 			for (unsigned int j = 0; j < name_size; j++) {
@@ -354,6 +363,8 @@ void AHClient::onSubInterest(const Interest &subInterest) {
 	// reply data with IP confirmation
 	Buffer content_buf;
 	for (unsigned int i = 0; i < sizeof(m_IP); i++) {
+		// Suppress both cppcoreguidelines-pro-type-cstyle-cast and
+		// cppcoreguidelines-pro-bounds-pointer-arithmetic NOLINTNEXTLINE
 		content_buf.push_back(*((uint8_t *)&m_IP + i));
 	}
 
@@ -462,8 +473,7 @@ void AHClient::onRegisterRouteDataReply(const Interest &interest,
 			// Then send back our info.
 			Name prefix(route_name);
 			prefix.append("nd-info");
-			prefix.append((uint8_t *)&m_IP, sizeof(m_IP))
-			    .append((uint8_t *)&m_port, sizeof(m_port));
+			appendIpPort(prefix);
 			prefix.appendNumber(m_prefix.size())
 			    .append(m_prefix)
 			    .appendTimestamp();
@@ -560,7 +570,6 @@ void AHClient::onDestroyFaceDataReply(const Interest &interest,
                                       const Data &data) {
 	short response_code = 0;
 	std::array<char, BUF_SIZE> response_text{0};
-	std::array<char, BUF_SIZE> buf{0}; // For parsing
 	int face_id = 0;
 	Block response_block = data.getContent().blockFromValue();
 	response_block.parse();
@@ -569,19 +578,14 @@ void AHClient::onDestroyFaceDataReply(const Interest &interest,
 	Block const &status_text_block = response_block.get(STATUS_TEXT);
 	Block const &status_parameter_block =
 	    response_block.get(CONTROL_PARAMETERS);
-	buf.fill(0);
-	memcpy(buf.data(), status_code_block.value(),
-	       status_code_block.value_size());
-	response_code = *(short *)buf.data();
+	response_code = *(short *)status_code_block.value(); // NOLINT
 	response_text.fill(0);
 	memcpy(response_text.data(), status_text_block.value(),
 	       status_text_block.value_size());
 
 	status_parameter_block.parse();
 	Block const &face_id_block = status_parameter_block.get(FACE_ID);
-	buf.fill(0);
-	memcpy(buf.data(), face_id_block.value(), face_id_block.value_size());
-	face_id = ntohs(*(int *)buf.data());
+	face_id = ntohs(*(int *)face_id_block.value()); // NOLINT
 
 	std::cout << response_code << " " << response_text.data()
 	          << ": Destroyed Face (FaceId: " << face_id << ")" << std::endl;
@@ -620,9 +624,9 @@ void AHClient::destroyFace(int face_id) {
 	Interest interest = prepareFaceDestroyInterest(face_id, m_keyChain);
 	m_face.expressInterest(
 	    interest,
-	    [this](auto &&PH1, auto &&PH2) { onDestroyFaceDataReply(PH1, PH2); },
-	    [this](auto &&PH1, auto &&PH2) { onNack(PH1, PH2); },
-	    [this](auto &&PH1) { onTimeout(PH1); });
+	    [](auto &&PH1, auto &&PH2) { onDestroyFaceDataReply(PH1, PH2); },
+	    [](auto &&PH1, auto &&PH2) { onNack(PH1, PH2); },
+	    [](auto &&PH1) { onTimeout(PH1); });
 }
 
 void AHClient::onSetStrategyDataReply(const Interest &interest,
@@ -648,20 +652,20 @@ void AHClient::setStrategy(const string &uri, const string &strategy) {
 	Interest interest = prepareStrategySetInterest(uri, strategy, m_keyChain);
 	m_face.expressInterest(
 	    interest,
-	    [this](auto &&PH1, auto &&PH2) { onSetStrategyDataReply(PH1, PH2); },
-	    [this](auto &&PH1, auto &&PH2) { onNack(PH1, PH2); },
-	    [this](auto &&PH1) { onTimeout(PH1); });
+	    [](auto &&PH1, auto &&PH2) { onSetStrategyDataReply(PH1, PH2); },
+	    [](auto &&PH1, auto &&PH2) { onNack(PH1, PH2); },
+	    [](auto &&PH1) { onTimeout(PH1); });
 }
 
 void AHClient::setIP() {
+	// This will have NOLINTS because it is using a C api and will be doing
+	// unsafe stuff.
 	struct ifaddrs *ifaddr = nullptr;
 	struct ifaddrs *ifa = nullptr;
 	int s = 0;
 	bool found = false;
 	std::array<char, NI_MAXHOST> host{};
-	std::array<char, NI_MAXHOST> netmask{};
 	host.fill(0);
-	netmask.fill(0);
 	if (getifaddrs(&ifaddr) == -1) {
 		perror("getifaddrs");
 		exit(EXIT_FAILURE);
@@ -678,23 +682,18 @@ void AHClient::setIP() {
 			// cout << "getnameinfo() failed: " << gai_strerror(s) << endl;
 			continue;
 		}
-		s = getnameinfo(ifa->ifa_netmask, sizeof(struct sockaddr_in),
-		                netmask.data(), NI_MAXHOST, nullptr, 0, NI_NUMERICHOST);
-		if (s != 0) {
-			// cout << "getnameinfo() failed: " << gai_strerror(s) << endl;
-			continue;
-		}
 
 		if (ifa->ifa_addr->sa_family == AF_INET) {
 			// NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
 			if (ifa->ifa_name[0] == 'l' &&
-			    ifa->ifa_name[1] == 'o') { // Loopback
+			    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
+			    ifa->ifa_name[1] == 'o') {
+				// Loopback
 				continue;
 			}
 			cout << "\tInterface : <" << ifa->ifa_name << ">" << endl;
 			cout << "\t  Address : <" << host.data() << ">" << endl;
 			inet_aton(host.data(), &m_IP);
-			inet_aton(netmask.data(), &m_submask);
 			found = true;
 			break;
 		}
