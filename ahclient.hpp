@@ -24,7 +24,7 @@ struct DBEntry {
 
 class AHClient {
   public:
-	AHClient(const ndn::Name &m_prefix, const ndn::Name &broadcast_prefix);
+	AHClient(ndn::Name m_prefix, ndn::Name broadcast_prefix, int port);
 	void registerPrefixes() { registerClientPrefix(); }
 	void processEvents() { m_face.processEvents(); }
 	void sendKeepAliveInterest();
@@ -50,14 +50,15 @@ class AHClient {
 	                              int cost, bool send_data);
 	void onAddFaceDataReply(const ndn::Interest &interest,
 	                        const ndn::Data &data, const std::string &uri,
-	                        ndn::Name prefix, DBEntry entry, bool send_data);
-	void onDestroyFaceDataReply(const ndn::Interest &interest,
-	                            const ndn::Data &data);
-	void addFaceAndPrefix(const std::string &uri, ndn::Name prefix,
-	                      DBEntry entry, bool send_data);
+	                        const ndn::Name &prefix, DBEntry entry,
+	                        bool send_data);
+	static void onDestroyFaceDataReply(const ndn::Interest &interest,
+	                                   const ndn::Data &data);
+	void addFaceAndPrefix(const std::string &uri, ndn::Name const &prefix,
+	                      DBEntry const &entry, bool send_data);
 	void destroyFace(int face_id);
-	void onSetStrategyDataReply(const ndn::Interest &interest,
-	                            const ndn::Data &data);
+	static void onSetStrategyDataReply(const ndn::Interest &interest,
+	                                   const ndn::Data &data);
 	void setStrategy(const std::string &uri, const std::string &strategy);
 	void setIP();
 

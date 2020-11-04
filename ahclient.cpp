@@ -9,12 +9,15 @@
 using namespace ndn;
 using namespace std;
 
-const ndn::time::milliseconds SERVER_DISCOVERY_INTEREST_LIFETIME = 4_s;
+constexpr ndn::time::milliseconds SERVER_DISCOVERY_INTEREST_LIFETIME = 4_s;
+constexpr int BUF_SIZE = 1000;
+constexpr int FRESHNESS_MS = 4000;
+constexpr auto INTEREST_LIFETIME = 30_s;
 
-static ndn::Block makeRibInterestParameter(const ndn::Name &route_name,
-                                           int face_id) {
+static auto makeRibInterestParameter(const ndn::Name &route_name,
+                                     const int face_id) -> ndn::Block {
 	auto block = ndn::makeEmptyBlock(CONTROL_PARAMETERS);
-	ndn::Block route_name_block = route_name.wireEncode();
+	const ndn::Block &route_name_block = route_name.wireEncode();
 	ndn::Block face_id_block =
 	    ndn::makeNonNegativeIntegerBlock(FACE_ID, face_id);
 	ndn::Block origin_block = ndn::makeNonNegativeIntegerBlock(ORIGIN, 0xFF);
@@ -37,10 +40,9 @@ static ndn::Block makeRibInterestParameter(const ndn::Name &route_name,
 	return block;
 }
 
-static ndn::Interest prepareRibRegisterInterest(const ndn::Name &route_name,
-                                                int face_id,
-                                                ndn::KeyChain &keychain,
-                                                int cost = 0) {
+static auto prepareRibRegisterInterest(const ndn::Name &route_name, int face_id,
+                                       ndn::KeyChain &keychain, int cost = 0)
+    -> ndn::Interest {
 	ndn::Name name("/localhost/nfd/rib/register");
 	ndn::Block control_params = makeRibInterestParameter(route_name, face_id);
 	name.append(control_params);
@@ -52,8 +54,9 @@ static ndn::Interest prepareRibRegisterInterest(const ndn::Name &route_name,
 	return interest;
 }
 
-static ndn::Interest prepareFaceCreationInterest(const std::string &uri,
-                                                 ndn::KeyChain &keychain) {
+static auto prepareFaceCreationInterest(const std::string &uri,
+                                        ndn::KeyChain &keychain)
+    -> ndn::Interest {
 	ndn::Name name("/localhost/nfd/faces/create");
 	auto control_block = ndn::makeEmptyBlock(CONTROL_PARAMETERS);
 	control_block.push_back(ndn::makeStringBlock(URI, uri));
@@ -67,8 +70,8 @@ static ndn::Interest prepareFaceCreationInterest(const std::string &uri,
 	return interest;
 }
 
-static ndn::Interest prepareFaceDestroyInterest(int face_id,
-                                                ndn::KeyChain &keychain) {
+static auto prepareFaceDestroyInterest(int face_id, ndn::KeyChain &keychain)
+    -> ndn::Interest {
 	ndn::Name name("/localhost/nfd/faces/destroy");
 	auto control_block = ndn::makeEmptyBlock(CONTROL_PARAMETERS);
 	control_block.push_back(ndn::makeNonNegativeIntegerBlock(FACE_ID, face_id));
@@ -82,9 +85,10 @@ static ndn::Interest prepareFaceDestroyInterest(int face_id,
 	return interest;
 }
 
-static ndn::Interest prepareStrategySetInterest(const std::string &prefix,
-                                                const std::string &strategy,
-                                                ndn::KeyChain &keychain) {
+static auto prepareStrategySetInterest(const std::string &prefix,
+                                       const std::string &strategy,
+                                       ndn::KeyChain &keychain)
+    -> ndn::Interest {
 	ndn::Name name("/localhost/nfd/strategy-choice/set");
 
 	auto prefix_block = ndn::Name(prefix).wireEncode();
@@ -106,17 +110,18 @@ static ndn::Interest prepareStrategySetInterest(const std::string &prefix,
 
 namespace ahnd {
 
-AHClient::AHClient(const Name &prefix, const Name &broadcast_prefix)
-    : m_prefix(prefix), m_broadcast_prefix(broadcast_prefix) {
+AHClient::AHClient(Name prefix, Name broadcast_prefix, int port)
+    : m_prefix(std::move(prefix)),
+      m_broadcast_prefix(std::move(broadcast_prefix)) {
 	m_scheduler = make_unique<Scheduler>(m_face.getIoService());
 	m_controller = std::make_shared<nfd::Controller>(m_face, m_keyChain);
 	setIP();
-	m_port = htons(6363); // default
+	m_port = htons(port);
 	m_multicast = std::make_unique<MulticastInterest>(m_face, m_controller,
 	                                                  m_broadcast_prefix);
 }
 
-bool AHClient::hasEntry(const Name &name) {
+auto AHClient::hasEntry(const Name &name) -> bool {
 	for (auto it = m_db.begin(); it != m_db.end();) {
 		bool is_prefix = it->prefix.isPrefixOf(name);
 		if (is_prefix) {
@@ -133,7 +138,7 @@ void AHClient::registerClientPrefix() {
 	cout << "AH Client: Registering Client Prefix: " << name << endl;
 	m_face.setInterestFilter(
 	    InterestFilter(name),
-	    bind(&AHClient::onArriveInterest, this, _2, false),
+	    [this](auto &&_, auto &&PH2) { onArriveInterest(PH2, false); },
 	    [this](const Name &name) {
 		    std::cout << "AH Client: Registered client prefix " << name.toUri()
 		              << std::endl;
@@ -160,7 +165,7 @@ void AHClient::registerKeepAlivePrefix() {
 		    m_keyChain.sign(*data,
 		                    security::SigningInfo(
 		                        security::SigningInfo::SIGNER_TYPE_SHA256));
-		    data->setFreshnessPeriod(time::milliseconds(4000));
+		    data->setFreshnessPeriod(time::milliseconds(FRESHNESS_MS));
 		    m_face.put(*data);
 	    },
 	    [this](const Name &name) {
@@ -182,7 +187,7 @@ void AHClient::registerArrivePrefix() {
 	          << m_broadcast_prefix.toUri() << std::endl;
 	m_arrivePrefixId = m_face.setInterestFilter(
 	    InterestFilter(m_broadcast_prefix),
-	    bind(&AHClient::onArriveInterest, this, _2, true),
+	    [this](auto &&_, auto &&PH2) { onArriveInterest(PH2, true); },
 	    [this](const Name &name) {
 		    std::cout << "AH Client: Registered arrive prefix " << name.toUri()
 		              << std::endl;
@@ -251,15 +256,15 @@ void AHClient::sendArrivalInterest() {
 // route information.
 void AHClient::onArriveInterest(const Interest &request, const bool send_back) {
 	// First setup the face and route the pier.
-	Name name = request.getName();
-	std::array<uint8_t, IP_BYTES> ip;
+	Name const &name = request.getName();
+	std::array<uint8_t, IP_BYTES> ip{};
 	ip.fill(0);
-	uint16_t port;
+	uint16_t port = 0;
 	const int IP_STR_LEN = 256;
-	std::array<char, IP_STR_LEN> ip_str;
+	std::array<char, IP_STR_LEN> ip_str{};
 	ip_str.fill(0);
 	for (unsigned int i = 0; i < name.size(); i++) {
-		Name::Component component = name.get(i);
+		Name::Component const &component = name.get(i);
 		bool ret = (component.compare(Name::Component("arrival")) == 0) ||
 		           (component.compare(Name::Component("nd-info")) == 0);
 		if (ret) {
@@ -294,7 +299,7 @@ void AHClient::onArriveInterest(const Interest &request, const bool send_back) {
 			m_keyChain.sign(*data,
 			                security::SigningInfo(
 			                    security::SigningInfo::SIGNER_TYPE_SHA256));
-			data->setFreshnessPeriod(time::milliseconds(4000));
+			data->setFreshnessPeriod(time::milliseconds(FRESHNESS_MS));
 			m_face.put(*data);
 			// Do not register route to myself
 			// XXX- do better then a strcmp here...
@@ -318,8 +323,10 @@ void AHClient::registerRoute(const Name &route_name, int face_id, int cost,
 	    prepareRibRegisterInterest(route_name, face_id, m_keyChain, cost);
 	m_face.expressInterest(
 	    interest,
-	    bind(&AHClient::onRegisterRouteDataReply, this, _1, _2, route_name,
-	         face_id, cost, send_data),
+	    [this, route_name, face_id, cost, send_data](auto &&PH1, auto &&PH2) {
+		    onRegisterRouteDataReply(PH1, PH2, route_name, face_id, cost,
+		                             send_data);
+	    },
 	    [this, route_name, face_id, cost, send_data](const Interest &interest,
 	                                                 const lp::Nack &nack) {
 		    std::cout << "AH Client: Received Nack with reason "
@@ -351,7 +358,7 @@ void AHClient::onSubInterest(const Interest &subInterest) {
 	}
 
 	auto data = make_shared<Data>(subInterest.getName());
-	if (content_buf.size() > 0) {
+	if (!content_buf.empty()) {
 		data->setContent(content_buf.get<uint8_t>(), content_buf.size());
 	} else {
 		return;
@@ -361,7 +368,7 @@ void AHClient::onSubInterest(const Interest &subInterest) {
 	                           security::SigningInfo::SIGNER_TYPE_SHA256));
 	// security::SigningInfo signInfo(security::SigningInfo::SIGNER_TYPE_ID,
 	// m_options.identity); m_keyChain.sign(*m_data, signInfo);
-	data->setFreshnessPeriod(time::milliseconds(4000));
+	data->setFreshnessPeriod(time::milliseconds(FRESHNESS_MS));
 	m_face.put(*data);
 	cout << "AH Client: Publishing Data: " << *data << endl;
 }
@@ -373,7 +380,7 @@ void AHClient::sendKeepAliveInterest() {
 		name.append("nd-keepalive");
 		name.appendTimestamp();
 		Interest interest(name);
-		interest.setInterestLifetime(30_s);
+		interest.setInterestLifetime(INTEREST_LIFETIME);
 		interest.setMustBeFresh(true);
 		interest.setNonce(4);
 		interest.setCanBePrefix(false);
@@ -419,31 +426,32 @@ void AHClient::onRegisterRouteDataReply(const Interest &interest,
 
 	std::cout << response_block << std::endl;
 
-	Block status_code_block = response_block.get(STATUS_CODE);
-	Block status_text_block = response_block.get(STATUS_TEXT);
+	Block const &status_code_block = response_block.get(STATUS_CODE);
+	Block const &status_text_block = response_block.get(STATUS_TEXT);
 	short response_code = readNonNegativeIntegerAs<int>(status_code_block);
-	char response_text[1000] = {0};
-	memcpy(response_text, status_text_block.value(),
+	std::array<char, BUF_SIZE> response_text{0};
+	response_text.fill(0);
+	memcpy(response_text.data(), status_text_block.value(),
 	       status_text_block.value_size());
 
 	if (response_code == OK) {
 
-		Block control_params = response_block.get(CONTROL_PARAMETERS);
+		Block const &control_params = response_block.get(CONTROL_PARAMETERS);
 		control_params.parse();
 
-		Block name_block = control_params.get(ndn::tlv::Name);
+		Block const &name_block = control_params.get(ndn::tlv::Name);
 		Name route_name(name_block);
-		Block face_id_block = control_params.get(FACE_ID);
+		Block const &face_id_block = control_params.get(FACE_ID);
 		int face_id = readNonNegativeIntegerAs<int>(face_id_block);
-		Block origin_block = control_params.get(ORIGIN);
+		Block const &origin_block = control_params.get(ORIGIN);
 		int origin = readNonNegativeIntegerAs<int>(origin_block);
-		Block route_cost_block = control_params.get(COST);
+		Block const &route_cost_block = control_params.get(COST);
 		int route_cost = readNonNegativeIntegerAs<int>(route_cost_block);
-		Block flags_block = control_params.get(FLAGS);
+		Block const &flags_block = control_params.get(FLAGS);
 		int flags = readNonNegativeIntegerAs<int>(flags_block);
 
 		std::cout << "\nRegistration of route succeeded:" << std::endl;
-		std::cout << "Status text: " << response_text << std::endl;
+		std::cout << "Status text: " << response_text.data() << std::endl;
 
 		std::cout << "Route name: " << route_name.toUri() << std::endl;
 		std::cout << "Face id: " << face_id << std::endl;
@@ -462,7 +470,7 @@ void AHClient::onRegisterRouteDataReply(const Interest &interest,
 
 			std::cout << "AH Client: Subscribe Back to " << prefix << std::endl;
 			Interest interest(prefix);
-			interest.setInterestLifetime(30_s);
+			interest.setInterestLifetime(INTEREST_LIFETIME);
 			interest.setMustBeFresh(true);
 			interest.setNonce(4);
 			interest.setCanBePrefix(false);
@@ -498,7 +506,7 @@ void AHClient::onRegisterRouteDataReply(const Interest &interest,
 		}
 	} else {
 		std::cout << "\nRegistration of route failed." << std::endl;
-		std::cout << "Status text: " << response_text << std::endl;
+		std::cout << "Status text: " << response_text.data() << std::endl;
 		m_scheduler->schedule(
 		    time::seconds(3), [this, route_name, face_id, cost, send_data] {
 			    registerRoute(route_name, face_id, cost, send_data);
@@ -507,27 +515,29 @@ void AHClient::onRegisterRouteDataReply(const Interest &interest,
 }
 
 void AHClient::onAddFaceDataReply(const Interest &interest, const Data &data,
-                                  const string &uri, const Name prefix,
+                                  const string &uri, const Name &prefix,
                                   DBEntry entry, const bool send_data) {
-	short response_code;
-	char response_text[1000] = {0};
-	int face_id; // Store faceid for deletion of face
-	Block response_block = data.getContent().blockFromValue();
+	short response_code = 0;
+	std::array<char, BUF_SIZE> response_text{0};
+	response_text.fill(0);
+	int face_id = 0; // Store faceid for deletion of face
+	Block const &response_block = data.getContent().blockFromValue();
 	response_block.parse();
 
-	Block status_code_block = response_block.get(STATUS_CODE);
-	Block status_text_block = response_block.get(STATUS_TEXT);
+	Block const &status_code_block = response_block.get(STATUS_CODE);
+	Block const &status_text_block = response_block.get(STATUS_TEXT);
 	response_code = readNonNegativeIntegerAs<int>(status_code_block);
-	memcpy(response_text, status_text_block.value(),
+	memcpy(response_text.data(), status_text_block.value(),
 	       status_text_block.value_size());
 
 	// Get FaceId for future removal of the face
 	if (response_code == OK || response_code == FACE_EXISTS) {
-		Block status_parameter_block = response_block.get(CONTROL_PARAMETERS);
+		Block const &status_parameter_block =
+		    response_block.get(CONTROL_PARAMETERS);
 		status_parameter_block.parse();
-		Block face_id_block = status_parameter_block.get(FACE_ID);
+		Block const &face_id_block = status_parameter_block.get(FACE_ID);
 		face_id = readNonNegativeIntegerAs<int>(face_id_block);
-		std::cout << response_code << " " << response_text
+		std::cout << response_code << " " << response_text.data()
 		          << ": Added Face (FaceId: " << face_id << "): " << uri
 		          << std::endl;
 
@@ -538,7 +548,7 @@ void AHClient::onAddFaceDataReply(const Interest &interest, const Data &data,
 		registerRoute(prefix, face_id, 0, send_data);
 	} else {
 		std::cout << "\nCreation of face failed." << std::endl;
-		std::cout << "Status text: " << response_text << std::endl;
+		std::cout << "Status text: " << response_text.data() << std::endl;
 		m_scheduler->schedule(
 		    time::seconds(3), [this, uri, prefix, entry, send_data] {
 			    addFaceAndPrefix(uri, prefix, entry, send_data);
@@ -548,39 +558,44 @@ void AHClient::onAddFaceDataReply(const Interest &interest, const Data &data,
 
 void AHClient::onDestroyFaceDataReply(const Interest &interest,
                                       const Data &data) {
-	short response_code;
-	char response_text[1000] = {0};
-	char buf[1000] = {0}; // For parsing
-	int face_id;
+	short response_code = 0;
+	std::array<char, BUF_SIZE> response_text{0};
+	std::array<char, BUF_SIZE> buf{0}; // For parsing
+	int face_id = 0;
 	Block response_block = data.getContent().blockFromValue();
 	response_block.parse();
 
-	Block status_code_block = response_block.get(STATUS_CODE);
-	Block status_text_block = response_block.get(STATUS_TEXT);
-	Block status_parameter_block = response_block.get(CONTROL_PARAMETERS);
-	memcpy(buf, status_code_block.value(), status_code_block.value_size());
-	response_code = *(short *)buf;
-	memcpy(response_text, status_text_block.value(),
+	Block const &status_code_block = response_block.get(STATUS_CODE);
+	Block const &status_text_block = response_block.get(STATUS_TEXT);
+	Block const &status_parameter_block =
+	    response_block.get(CONTROL_PARAMETERS);
+	buf.fill(0);
+	memcpy(buf.data(), status_code_block.value(),
+	       status_code_block.value_size());
+	response_code = *(short *)buf.data();
+	response_text.fill(0);
+	memcpy(response_text.data(), status_text_block.value(),
 	       status_text_block.value_size());
 
 	status_parameter_block.parse();
-	Block face_id_block = status_parameter_block.get(FACE_ID);
-	memset(buf, 0, sizeof(buf));
-	memcpy(buf, face_id_block.value(), face_id_block.value_size());
-	face_id = ntohs(*(int *)buf);
+	Block const &face_id_block = status_parameter_block.get(FACE_ID);
+	buf.fill(0);
+	memcpy(buf.data(), face_id_block.value(), face_id_block.value_size());
+	face_id = ntohs(*(int *)buf.data());
 
-	std::cout << response_code << " " << response_text
+	std::cout << response_code << " " << response_text.data()
 	          << ": Destroyed Face (FaceId: " << face_id << ")" << std::endl;
 }
 
-void AHClient::addFaceAndPrefix(const string &uri, const Name prefix,
-                                DBEntry entry, const bool send_data) {
+void AHClient::addFaceAndPrefix(const string &uri, Name const &prefix,
+                                DBEntry const &entry, const bool send_data) {
 	cout << "AH Client: Adding face: " << uri << endl;
 	Interest interest = prepareFaceCreationInterest(uri, m_keyChain);
 	m_face.expressInterest(
 	    interest,
-	    bind(&AHClient::onAddFaceDataReply, this, _1, _2, uri, prefix, entry,
-	         send_data),
+	    [this, uri, prefix, entry, send_data](auto &&PH1, auto &&PH2) {
+		    onAddFaceDataReply(PH1, PH2, uri, prefix, entry, send_data);
+	    },
 	    [this, uri, prefix, entry, send_data](const Interest &interest,
 	                                          const lp::Nack &nack) {
 		    std::cout << "AH Client: Received Nack with reason "
@@ -604,9 +619,10 @@ void AHClient::addFaceAndPrefix(const string &uri, const Name prefix,
 void AHClient::destroyFace(int face_id) {
 	Interest interest = prepareFaceDestroyInterest(face_id, m_keyChain);
 	m_face.expressInterest(
-	    interest, bind(&AHClient::onDestroyFaceDataReply, this, _1, _2),
-	    bind(&AHClient::onNack, this, _1, _2),
-	    bind(&AHClient::onTimeout, this, _1));
+	    interest,
+	    [this](auto &&PH1, auto &&PH2) { onDestroyFaceDataReply(PH1, PH2); },
+	    [this](auto &&PH1, auto &&PH2) { onNack(PH1, PH2); },
+	    [this](auto &&PH1) { onTimeout(PH1); });
 }
 
 void AHClient::onSetStrategyDataReply(const Interest &interest,
@@ -618,7 +634,8 @@ void AHClient::onSetStrategyDataReply(const Interest &interest,
 	std::string response_txt = readString(response_block.get(STATUS_TEXT));
 
 	if (response_code == OK) {
-		Block status_parameter_block = response_block.get(CONTROL_PARAMETERS);
+		Block const &status_parameter_block =
+		    response_block.get(CONTROL_PARAMETERS);
 		status_parameter_block.parse();
 		std::cout << "\nSet strategy succeeded." << std::endl;
 	} else {
@@ -630,45 +647,63 @@ void AHClient::onSetStrategyDataReply(const Interest &interest,
 void AHClient::setStrategy(const string &uri, const string &strategy) {
 	Interest interest = prepareStrategySetInterest(uri, strategy, m_keyChain);
 	m_face.expressInterest(
-	    interest, bind(&AHClient::onSetStrategyDataReply, this, _1, _2),
-	    bind(&AHClient::onNack, this, _1, _2),
-	    bind(&AHClient::onTimeout, this, _1));
+	    interest,
+	    [this](auto &&PH1, auto &&PH2) { onSetStrategyDataReply(PH1, PH2); },
+	    [this](auto &&PH1, auto &&PH2) { onNack(PH1, PH2); },
+	    [this](auto &&PH1) { onTimeout(PH1); });
 }
 
 void AHClient::setIP() {
-	struct ifaddrs *ifaddr, *ifa;
-	int s;
-	char host[NI_MAXHOST];
-	char netmask[NI_MAXHOST];
+	struct ifaddrs *ifaddr = nullptr;
+	struct ifaddrs *ifa = nullptr;
+	int s = 0;
+	bool found = false;
+	std::array<char, NI_MAXHOST> host{};
+	std::array<char, NI_MAXHOST> netmask{};
+	host.fill(0);
+	netmask.fill(0);
 	if (getifaddrs(&ifaddr) == -1) {
 		perror("getifaddrs");
 		exit(EXIT_FAILURE);
 	}
 
-	for (ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
-		if (ifa->ifa_addr == NULL)
+	for (ifa = ifaddr; ifa != nullptr; ifa = ifa->ifa_next) {
+		if (ifa->ifa_addr == nullptr) {
 			continue;
+		}
 
-		s = getnameinfo(ifa->ifa_addr, sizeof(struct sockaddr_in), host,
-		                NI_MAXHOST, NULL, 0, NI_NUMERICHOST);
-		s = getnameinfo(ifa->ifa_netmask, sizeof(struct sockaddr_in), netmask,
-		                NI_MAXHOST, NULL, 0, NI_NUMERICHOST);
+		s = getnameinfo(ifa->ifa_addr, sizeof(struct sockaddr_in), host.data(),
+		                NI_MAXHOST, nullptr, 0, NI_NUMERICHOST);
+		if (s != 0) {
+			// cout << "getnameinfo() failed: " << gai_strerror(s) << endl;
+			continue;
+		}
+		s = getnameinfo(ifa->ifa_netmask, sizeof(struct sockaddr_in),
+		                netmask.data(), NI_MAXHOST, nullptr, 0, NI_NUMERICHOST);
+		if (s != 0) {
+			// cout << "getnameinfo() failed: " << gai_strerror(s) << endl;
+			continue;
+		}
 
 		if (ifa->ifa_addr->sa_family == AF_INET) {
-			if (s != 0) {
-				cout << "getnameinfo() failed: " << gai_strerror(s) << endl;
-				exit(EXIT_FAILURE);
-			}
-			if (ifa->ifa_name[0] == 'l' && ifa->ifa_name[1] == 'o') // Loopback
+			// NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
+			if (ifa->ifa_name[0] == 'l' &&
+			    ifa->ifa_name[1] == 'o') { // Loopback
 				continue;
+			}
 			cout << "\tInterface : <" << ifa->ifa_name << ">" << endl;
-			cout << "\t  Address : <" << host << ">" << endl;
-			inet_aton(host, &m_IP);
-			inet_aton(netmask, &m_submask);
+			cout << "\t  Address : <" << host.data() << ">" << endl;
+			inet_aton(host.data(), &m_IP);
+			inet_aton(netmask.data(), &m_submask);
+			found = true;
 			break;
 		}
 	}
 	freeifaddrs(ifaddr);
+	if (!found) {
+		cout << "AH Client: Could not find host ip." << endl;
+		exit(1);
+	}
 }
 
 } // namespace ahnd

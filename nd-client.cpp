@@ -6,26 +6,16 @@ using namespace ndn;
 using namespace ahnd;
 using namespace std;
 
-const Name SERVER_PREFIX("/ahnd");
-// const Name SERVER_DISCOVERY_PREFIX("/ndn/nd/arrival");
-// const uint64_t SERVER_DISCOVERY_ROUTE_COST(0);
-// const time::milliseconds SERVER_DISCOVERY_ROUTE_EXPIRATION = 30_s;
-// const time::milliseconds SERVER_DISCOVERY_INTEREST_LIFETIME = 4_s;
-
-class Options {
-  public:
-	Options() : m_prefix("/test/01/02"), server_prefix("/ndn/nd") {}
-
-  public:
-	ndn::Name m_prefix;
-	ndn::Name server_prefix;
-};
+const Name BROADCAST_PREFIX("/ahnd");
+constexpr int KEEPALIVE_SECONDS = 300;
+constexpr int DEFAULT_PORT = 6363;
 
 class Program {
   public:
-	explicit Program(const Options &options) : m_options(options) {
+	explicit Program(const ndn::Name &prefix) {
 		// Init client
-		m_client = make_unique<AHClient>(m_options.m_prefix, SERVER_PREFIX);
+		m_client =
+		    make_unique<AHClient>(prefix, BROADCAST_PREFIX, DEFAULT_PORT);
 
 		m_scheduler = make_unique<Scheduler>(m_client->face().getIoService());
 		m_client->registerPrefixes();
@@ -37,23 +27,25 @@ class Program {
 
 	void loop() {
 		m_client->sendKeepAliveInterest();
-		m_scheduler->schedule(time::seconds(300), [this] { loop(); });
+		m_scheduler->schedule(time::seconds(KEEPALIVE_SECONDS),
+		                      [this] { loop(); });
 	}
 
   private:
 	std::unique_ptr<AHClient> m_client;
-	const Options m_options;
 	std::unique_ptr<Scheduler> m_scheduler;
 };
 
-int main(int argc, char **argv) {
+auto main(int argc, char *argv[]) -> int {
+	// Suppress the pointer arithmetic lint on two lines, this is just how you
+	// deal with arguments...
 	if (argc < 2) {
+		// NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
 		cout << "usage: " << argv[0] << "/prefix" << endl;
 		cout << "    /prefix: the ndn name for this client" << endl;
 		return 1;
 	}
-	Options opt;
-	opt.m_prefix = argv[1];
-	Program program(opt);
+	// NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
+	Program program(argv[1]);
 	program.loop();
 }
