@@ -1,28 +1,58 @@
 CXX = g++
-CXXFLAGS = -std=c++14 -Wall `pkg-config --cflags libndn-cxx` -g
+CXXFLAGS = -std=c++14 -Wall -Werror `pkg-config --cflags libndn-cxx`
 LIBS = `pkg-config --libs libndn-cxx`
 DESTDIR ?= /usr/local
-SRC_DIR = .
+SRC_DIR = src
 SOURCES = nd-client.cpp ahclient.cpp multicast.cpp
-SOURCE_OBJS = nd-client.o ahclient.o multicast.o #nd-app.o
-PROGRAMS = nd-client
+OBJS = $(SOURCES:.cpp=.o)
+EXE  = ah-ndn
+DEPS = $(OBJS:%.o=%.d)
+BUILD_DIR = build
 
-all: $(PROGRAMS)
+ifeq ($(RELEASE),1)
+BLDDIR = $(BUILD_DIR)/release
+EXTRAFLAGS = -O3 -DNDEBUG
+else
+BLDDIR = $(BUILD_DIR)/debug
+EXTRAFLAGS = -g -O0 -DDEBUG
+endif
 
-%.o: %.cpp
-	$(CXX) $(CXXFLAGS) -o $@ -c $< $(LIBS)
+BLDEXE = $(BLDDIR)/$(EXE)
+BLDOBJS = $(addprefix $(BLDDIR)/, $(OBJS))
+BLDDEPS = $(addprefix $(BLDDIR)/, $(DEPS))
 
-nd-client: $(SOURCE_OBJS)
-	$(CXX) $(CXXFLAGS) -o $@ nd-client.o ahclient.o multicast.o $(LIBS)
+SOURCE_OBJS = nd-client.o ahclient.o multicast.o
+
+.PHONY: all depend clean debug prep release remake install uninstall fmt style check-fmt tidy-ALL tidy
+
+# Default build
+all: prep $(BLDEXE)
+
+# Include all .d files
+-include $(BLDDEPS)
+
+$(BLDEXE): $(BLDOBJS)
+	$(CXX) $(CXXFLAGS) $(EXTRAFLAGS) -o $(BLDEXE) $^ $(LIBS)
+
+$(BLDDIR)/%.o: $(SRC_DIR)/%.cpp
+	$(CXX) -c $(CXXFLAGS) $(EXTRAFLAGS) -MMD -o $@ $< $(LIBS)
+
+#
+# Other rules
+#
+prep:
+	@mkdir -p $(BLDDIR)
+
+remake: clean all
 
 clean:
-	rm -f $(PROGRAMS) *.o
+	rm -rf $(BUILD_DIR)/
 
 install: all
-	cp $(PROGRAMS) $(DESTDIR)/bin/
+	cp $(BLDEXE) $(DESTDIR)/bin/
 
 uninstall:
-	cd $(DESTDIR)/bin && rm -f $(PROGRAMS)
+	cd $(DESTDIR)/bin && rm -f $(EXE)
 
 fmt:
 	@for src in $(SOURCES) ; do \
@@ -80,3 +110,6 @@ tidy:
 			"$(SRC_DIR)/$$src" -- $(CXXFLAGS) $(LIBS) -c $(SRC_DIR)/$$src ; \
 	done
 	@echo "Done"
+
+
+

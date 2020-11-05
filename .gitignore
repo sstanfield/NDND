@@ -1,7 +1,6 @@
 *DS
-nd-server
-nd-client
 .vscode
 ._*
 *.dSYM
-*.o
+build/
+.idea/
