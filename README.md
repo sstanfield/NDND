@@ -1,17 +1,21 @@
 # Named Data Networking Neighbor Discovery (NDND)
 
-NOTE: This is a fork with the intent or allowing neighbor discovery using
-multi-cast and no server (ie, clients can find each other with no other support).
-This readme has NOT been updated for those changes yet.
-Also if a client can not find a server it will become the server.  This is
-VERY brittle right now (race conditions, etc).
+NOTE: This is a fork of https://github.com/Zhiyi-Zhang/NDND that was heavily
+modified with the intent of being an ad-hoc (serverless) neighbor discovery
+protocol for NDN.  It does NOT implement the same protocol but it is based on it.
 
 ## An Overview
 
-Named Data Networking proposes a fundamental change to the Internet’s architecture, moving from a point-to-point to a data-centric model.
-NDN can run over layer 2 (WiFi, Bluetooth, etc) or over TCP/UDP/IP.
-When running over IP, NDN hosts need a way of automatically discovering and establishing connectivity with each other.
-This project provides an implementation of NDN Neighbor Discovery service, which uses a rendezvous server to allow NDN hosts in the same network to discover each other and automatically establish NDN connectivity by creating UDP/IP tunnels among them.
+Named Data Networking proposes a fundamental change to the Internet’s
+architecture, moving from a point-to-point to a data-centric model. NDN can run
+over layer 2 (WiFi, Bluetooth, etc) or over TCP/UDP/IP. When running over IP,
+NDN hosts need a way of automatically discovering and establishing connectivity with each other.
+This project provides an implementation of an ad hoc neighbor discovery
+service.  It uses multicast to a shared route for clients to discover each other
+(no server is needed) allowing NDN hosts in the same network to discover each
+other and automatically establish NDN connectivity by creating UDP/IP tunnels
+among themselves.  Built as a service but should be easy to add to an
+application to provide an integrated discovery service.
 
 ## Authors
 * Zhiyi Zhang: zhiyi@cs.ucla.edu
@@ -19,106 +23,85 @@ This project provides an implementation of NDN Neighbor Discovery service, which
 * Tianyuan Yu: tianyuan@cs.ucla.com
 * Zhaoning Kong: jonnykong@cs.ucla.edu
 * Edward Lu: edwardzlu98@gmail.com
+* Steven Stanfield: stanfield@scarecrowtech.com (ad-hoc/multicast version)
 
 We also thank Arthi Padmanabhan (artpad@cs.ucla.edu) for her previous work in NDND.
 
-## How NDND works?
+## How Ad-hoc NDND works?
 
-There are three participants in NDND protocol.
+There are only client (piers) in this version.
 
-### ND-Client:
-When starts, It first registers the prefix `/<my_name>/nd-info`. This prefix is used for RV fetching Client NDND related info. Then Client register route to the ND-Server (or RV). The IP address and port number of RV is already known, either by the bootstrapping process or other methods. Afterwards, ND-Client does the following.
+### AH-Client:
+When starts, it registers three prefixes
+* `/ahnd` (default).  This is a shared multicast route that all
+clients will register and send an initial interest to announce themselves.
+* `/<my_name>/nd-info`. This prefix is used for Clients to exchange face/route info.
+* `/<my_name>/nd-keepalive`. This pefix is used for clients to periodically (default
+5 minutes) send interests to each other and expect an empty response to verify
+the other client is still online.
 
 #### Arrival Interest
-When starting neighbour discovery service, ND-Client first send out a Arrival Interest to notify RV in the network its arrival and expect no response. 
+When starting neighbour discovery service, AH-Client first sends out an Arrival Interest
+to notify other clients of its arrival. 
 ```
-Name: /ndn/nd/arrival/<name_length>/<Name>/<IP>/<Port>/<timestamp>
+Name: /ahnd/arrival/<IP>/<Port>/<prefix_length>/<prefix>/<timestamp>
 ```
-The `<name_length>` here refers the length or size of ND-Client's name. For example, Name `/cs/client01` has `<name_length>` 2 and Name `/client01` has 1. `<IP>` and `<Port>` refers to the interface ND-Client want to commnunicate. Currently the prefix of this Interest is `/ndn/nd`. It's not settled, but still should be a namespace exclusively for NDND protocol usage.
+The `<prefix_length>` here refers the length or size of AH-Client's prefix. For example, prefix `/cs/client01` has
+`<prefix_length>` 2 and prefix `/client01` has 1. `<IP>` and `<Port>` refers to
+the interface AH-Client wants to communicate with.
 
-
-#### RV Information Subscription
-After Arrival Interest, ND-Client periodically send Interests to fetch lastest RV records. 
+#### Arrival Response
+Each client that receives an arrival interest will add a face with it's ip/port
+and a route to it's prefix.  It will then send an interest directly to the client
+to provide this information in return.
 ```
-Name: /ndn/nd/<timestamp>
+Name: /<prefix>/nd-info/<IP>/<Port>/<prefix_length>/<prefix>/<timestamp>
 ```
-Consideration: Each Client's RV Subscription Interest should show no difference. Timestamp is the only component which uniquely identifies them.
+The remote client will then add a face and route for each interest it receives
+and send an empty reply as an acknowledgement.
 
-RV records will be pushed back in the RV's response Data. One single RV record entry has the following structure.
-```
-{ Protocol || IP Address || Port || Name }
-```
-Each entry indicate one available endpoint at this time. One or multiple RV record entry will be given back, depending on the available endpoints. Because RV Information Subscription does not differ different clients, Entry of "myself" is also returned.
-
-#### Neighbors Route Registeration
-Parsing the records from the RV Information Subscription and register route for each neighbor.
-
-#### Client Information Publishing
-When ND-Client start, it registers the `/<my_name>/nd-info`. NDND related information on client side will publish here, replying the periodic Interests, which in high-level forms a Subscription. By default, ND-Client's IP address is put into the Data content. One can put other useful information in it.  
-
-### ND-Server (RV):
-When starting neighbour discovery service, ND-Server registers the prefix `/ndn/nd`. The naming of this prefix is not settled, but should exclusively identify the NDND protocol. Then the ND-Server does the following.
-
-#### Listening to Arrival Interest
-Any new incoming Interest with `/ndn/nd/arrival` (no same nonce or timestamp found) will be treated as new ND-Client coming online. It will create a new record entry with parsed IP address, Port, and Name. Then register route to the new coming client.
-
-#### Client Information Subscription
-After ND-Client route registeration, ND-Server periodically send Interests to each ND-Client, which in high-level forms a Subscription. Interest is named by
-```
-Name: /<ND-Client Name>/nd-info/<timestamp>
-```
-In the default replied Data (if any), ND-Client's IP Address is expected. It's used by updating the record entries. Other information can also be put into Client Information.
-TODO: Further discussion needed.
-
-#### RV Information Publishing
-For each RV Information Subscription Interest, ND-Server replies back all registered ND-Client entries.
-```
-Name:         /ndn/nd/<timestamp>
-Content:      { Protocol || IP Address || Port || Name }
-              { Protocol || IP Address || Port || Name }
-              { Protocol || IP Address || Port || Name }
-                                ...
-Signature
-```
+#### Periodic heartbeat
+Each client will send a heartbeat interest to all other known piers (currently
+five minute interval).  If it does not get a response it will remove that piers
+face and route.  This also provides activity to keep the routes up.
 
 
 ### Local NFD:
-ND-Client manages the local NFD to create new face(s) and new route(s) to the neighbors. It uses the NFD Management Protocol (which can be found here https://redmine.named-data.net/projects/nfd/wiki/Management) in order to do the following things: 
+AH-Client manages the local NFD to create new face(s) and new route(s) to the neighbors.
+It uses the NFD Management Protocol (which can be found here
+https://redmine.named-data.net/projects/nfd/wiki/Management) in order to do the following things: 
 
-#### 1) Create a face for all URI's it receives from the ND-Server by sending a FIB Management control command (a signed interest)
+#### 1) Create a face for all URI's it receives from piers by sending a FIB Management control command (a signed interest)
 
-#### 2) Create a route for all URI and prefix pairs it receives from the ND-Server by sending a RIB Management control command (a signed interest)
+#### 2) Create a route for all URI and prefix pairs it receives from piers by sending a RIB Management control command (a signed interest)
 
-## Try NDND in 3 Steps
-
-### Step 1: Clone the codebase
-```
-git clone https://github.com/Zhiyi-Zhang/NDND
-cd NDND
-```
-
-### Step 2: Compile it using “make”
-```
-make
-```
-
-### Step 3: Run it
-Server side:
-```
-./nd-server
-```
-Client side:
-```
-./nd-client
-```
-
+## Try Ad-hoc NDND in 3 Steps
 
 ### Prerequisite:
 * Compile and Install ndn-cxx and NFD.
 * Running NFD.
 
+### Step 1: Clone the codebase
+```
+git clone https://github.com/sstanfield/NDND.git
+cd NDND
+```
 
-## Future Work
+### Step 2: Compile it using “make”
+```
+make RELEASE=1
+```
+Note, leave off the RELEASE=1 for a debug build (which is fine to test).  If you
+do this use build/debug in step 3.
+
+### Step 3: Run it
+```
+build/release/ah-ndn /my/prefix
+```
+
+
+
+## Future Work  (These are for the original NDND, this ad hoc version may or may not have a future)
 
 * Add support of Signed Interest after the Signed Interest Format is implemented in ndn-cxx.
 * Add Persistent Storage Support.
