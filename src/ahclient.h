@@ -42,7 +42,6 @@ class AHClient {
 	void onArriveInterest(const ndn::Interest &request, bool send_back);
 	void registerRoute(const ndn::Name &route_name, int face_id, int cost,
 	                   bool send_data);
-	void onSubInterest(const ndn::Interest &subInterest);
 	static void onNack(const ndn::Interest &interest,
 	                   const ndn::lp::Nack &nack);
 	static void onTimeout(const ndn::Interest &interest);
@@ -58,10 +57,8 @@ class AHClient {
 	                                   const ndn::Data &data);
 	void addFaceAndPrefix(const std::string &uri, ndn::Name const &prefix,
 	                      DBEntry const &entry, bool send_data);
+	void removeRouteAndFace(const DBEntry &item);
 	void destroyFace(int face_id);
-	static void onSetStrategyDataReply(const ndn::Interest &interest,
-	                                   const ndn::Data &data);
-	void setStrategy(const std::string &uri, const std::string &strategy);
 	void setIP();
 
 	ndn::Face m_face;

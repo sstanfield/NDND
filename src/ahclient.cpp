@@ -41,11 +41,49 @@ static auto makeRibInterestParameter(const ndn::Name &route_name,
 	return block;
 }
 
+static auto makeRibUnregeisterInterestParameter(const ndn::Name &route_name,
+                                                int face_id) -> ndn::Block {
+	auto block = ndn::makeEmptyBlock(CONTROL_PARAMETERS);
+	const ndn::Block &route_name_block = route_name.wireEncode();
+	ndn::Block face_id_block =
+	    ndn::makeNonNegativeIntegerBlock(FACE_ID, face_id);
+	// NOLINTNEXTLINE(cppcoreguidelines-avoid-magic-numbers,readability-magic-numbers)
+	ndn::Block origin_block = ndn::makeNonNegativeIntegerBlock(ORIGIN, 0xFF);
+
+	block.push_back(route_name_block);
+	block.push_back(face_id_block);
+	block.push_back(origin_block);
+
+	std::cerr << "Route name block:" << std::endl;
+	std::cerr << route_name_block << std::endl;
+	std::cerr << "Face id block:" << std::endl;
+	std::cerr << face_id_block << std::endl;
+	std::cerr << "Control parameters block:" << std::endl;
+	std::cerr << block << std::endl;
+	block.encode();
+	return block;
+}
+
 static auto prepareRibRegisterInterest(const ndn::Name &route_name, int face_id,
-                                       ndn::KeyChain &keychain, int cost = 0)
+                                       ndn::KeyChain &keychain)
     -> ndn::Interest {
 	ndn::Name name("/localhost/nfd/rib/register");
 	ndn::Block control_params = makeRibInterestParameter(route_name, face_id);
+	name.append(control_params);
+
+	ndn::security::CommandInterestSigner signer(keychain);
+	ndn::Interest interest = signer.makeCommandInterest(name);
+	interest.setMustBeFresh(true);
+	interest.setCanBePrefix(false);
+	return interest;
+}
+
+static auto prepareRibUnregisterInterest(const ndn::Name &route_name,
+                                         int face_id, ndn::KeyChain &keychain)
+    -> ndn::Interest {
+	ndn::Name name("/localhost/nfd/rib/unregister");
+	ndn::Block control_params =
+	    makeRibUnregeisterInterestParameter(route_name, face_id);
 	name.append(control_params);
 
 	ndn::security::CommandInterestSigner signer(keychain);
@@ -76,29 +114,6 @@ static auto prepareFaceDestroyInterest(int face_id, ndn::KeyChain &keychain)
 	ndn::Name name("/localhost/nfd/faces/destroy");
 	auto control_block = ndn::makeEmptyBlock(CONTROL_PARAMETERS);
 	control_block.push_back(ndn::makeNonNegativeIntegerBlock(FACE_ID, face_id));
-	control_block.encode();
-	name.append(control_block);
-
-	ndn::security::CommandInterestSigner signer(keychain);
-	ndn::Interest interest = signer.makeCommandInterest(name);
-	interest.setMustBeFresh(true);
-	interest.setCanBePrefix(false);
-	return interest;
-}
-
-static auto prepareStrategySetInterest(const std::string &prefix,
-                                       const std::string &strategy,
-                                       ndn::KeyChain &keychain)
-    -> ndn::Interest {
-	ndn::Name name("/localhost/nfd/strategy-choice/set");
-
-	auto prefix_block = ndn::Name(prefix).wireEncode();
-	auto strategy_block = ndn::makeEmptyBlock(STRATEGY);
-	strategy_block.push_back(ndn::Name(strategy).wireEncode());
-
-	auto control_block = ndn::makeEmptyBlock(CONTROL_PARAMETERS);
-	control_block.push_back(prefix_block);
-	control_block.push_back(strategy_block);
 	control_block.encode();
 	name.append(control_block);
 
@@ -329,7 +344,7 @@ void AHClient::onArriveInterest(const Interest &request, const bool send_back) {
 void AHClient::registerRoute(const Name &route_name, int face_id, int cost,
                              const bool send_data) {
 	Interest interest =
-	    prepareRibRegisterInterest(route_name, face_id, m_keyChain, cost);
+	    prepareRibRegisterInterest(route_name, face_id, m_keyChain);
 	m_face.expressInterest(
 	    interest,
 	    [this, route_name, face_id, cost, send_data](auto &&PH1, auto &&PH2) {
@@ -359,31 +374,6 @@ void AHClient::registerRoute(const Name &route_name, int face_id, int cost,
 	    });
 }
 
-void AHClient::onSubInterest(const Interest &subInterest) {
-	// reply data with IP confirmation
-	Buffer content_buf;
-	for (unsigned int i = 0; i < sizeof(m_IP); i++) {
-		// Suppress both cppcoreguidelines-pro-type-cstyle-cast and
-		// cppcoreguidelines-pro-bounds-pointer-arithmetic NOLINTNEXTLINE
-		content_buf.push_back(*((uint8_t *)&m_IP + i));
-	}
-
-	auto data = make_shared<Data>(subInterest.getName());
-	if (!content_buf.empty()) {
-		data->setContent(content_buf.get<uint8_t>(), content_buf.size());
-	} else {
-		return;
-	}
-
-	m_keyChain.sign(*data, security::SigningInfo(
-	                           security::SigningInfo::SIGNER_TYPE_SHA256));
-	// security::SigningInfo signInfo(security::SigningInfo::SIGNER_TYPE_ID,
-	// m_options.identity); m_keyChain.sign(*m_data, signInfo);
-	data->setFreshnessPeriod(time::milliseconds(FRESHNESS_MS));
-	m_face.put(*data);
-	cout << "AH Client: Publishing Data: " << *data << endl;
-}
-
 void AHClient::sendKeepAliveInterest() {
 	for (auto it = m_db.begin(); it != m_db.end(); it = m_db.erase(it)) {
 		const DBEntry item = *it;
@@ -403,18 +393,17 @@ void AHClient::sendKeepAliveInterest() {
 			         << interest.getName() << endl;
 			    m_db.push_back(item);
 		    },
-		    [](const Interest &interest, const lp::Nack &nack) {
+		    [item, this](const Interest &interest, const lp::Nack &nack) {
 			    // Humm, log this and retry...
 			    std::cout << "AH Client: received keep alive Nack with reason "
 			              << nack.getReason() << " for interest " << interest
 			              << std::endl;
-			    // XXX TODO- shutdown face/route.
+			    removeRouteAndFace(item);
 		    },
-		    [](const Interest &interest) {
+		    [item, this](const Interest &interest) {
 			    // This is odd (we should get a packet from ourselves)...
 			    std::cout << "AH Client: Keep alive timeout " << interest
 			              << std::endl;
-			    // XXX TODO- shutdown face/route.
 		    });
 	}
 }
@@ -620,39 +609,23 @@ void AHClient::addFaceAndPrefix(const string &uri, Name const &prefix,
 	    });
 }
 
+void AHClient::removeRouteAndFace(const DBEntry &item) {
+	// Shutdown route/face.
+	auto unreg_interest =
+	    prepareRibUnregisterInterest(item.prefix, item.faceId, m_keyChain);
+	m_face.expressInterest(
+	    unreg_interest,
+	    [item, this](const Interest &interest, const Data &data) {
+		    destroyFace(item.faceId);
+	    },
+	    nullptr, nullptr);
+}
+
 void AHClient::destroyFace(int face_id) {
 	Interest interest = prepareFaceDestroyInterest(face_id, m_keyChain);
 	m_face.expressInterest(
 	    interest,
 	    [](auto &&PH1, auto &&PH2) { onDestroyFaceDataReply(PH1, PH2); },
-	    [](auto &&PH1, auto &&PH2) { onNack(PH1, PH2); },
-	    [](auto &&PH1) { onTimeout(PH1); });
-}
-
-void AHClient::onSetStrategyDataReply(const Interest &interest,
-                                      const Data &data) {
-	Block response_block = data.getContent().blockFromValue();
-	response_block.parse();
-	int response_code =
-	    readNonNegativeIntegerAs<int>(response_block.get(STATUS_CODE));
-	std::string response_txt = readString(response_block.get(STATUS_TEXT));
-
-	if (response_code == OK) {
-		Block const &status_parameter_block =
-		    response_block.get(CONTROL_PARAMETERS);
-		status_parameter_block.parse();
-		std::cout << "\nSet strategy succeeded." << std::endl;
-	} else {
-		std::cout << "\nSet strategy failed." << std::endl;
-		std::cout << "Status text: " << response_txt << std::endl;
-	}
-}
-
-void AHClient::setStrategy(const string &uri, const string &strategy) {
-	Interest interest = prepareStrategySetInterest(uri, strategy, m_keyChain);
-	m_face.expressInterest(
-	    interest,
-	    [](auto &&PH1, auto &&PH2) { onSetStrategyDataReply(PH1, PH2); },
 	    [](auto &&PH1, auto &&PH2) { onNack(PH1, PH2); },
 	    [](auto &&PH1) { onTimeout(PH1); });
 }
