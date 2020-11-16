@@ -10,12 +10,14 @@ namespace ahnd {
 const int IP_BYTES = 16;
 
 struct DBEntry {
+	static long count;
+	const long id;
 	std::array<uint8_t, IP_BYTES> ip{};
 	uint16_t port;
 	ndn::Name prefix;
 	int faceId;
 
-	DBEntry() {
+	DBEntry() : id(count++) {
 		ip.fill(0);
 		port = 0;
 		faceId = 0;
@@ -32,7 +34,10 @@ class AHClient {
 
   private:
 	void appendIpPort(ndn::Name &name);
+	auto newItem() -> DBEntry &;
 	auto hasEntry(const ndn::Name &name) -> bool;
+	void removeItem(const ndn::Name &name);
+	void removeItem(const DBEntry &item);
 	void registerClientPrefix();
 	void registerKeepAlivePrefix();
 	void registerArrivePrefix();
@@ -45,19 +50,20 @@ class AHClient {
 	static void onNack(const ndn::Interest &interest,
 	                   const ndn::lp::Nack &nack);
 	static void onTimeout(const ndn::Interest &interest);
+	void sendData(const ndn::Name &route_name, int face_id, int count = 1);
 	void onRegisterRouteDataReply(const ndn::Interest &interest,
 	                              const ndn::Data &data,
 	                              const ndn::Name &route_name, int face_id,
 	                              int cost, bool send_data);
 	void onAddFaceDataReply(const ndn::Interest &interest,
 	                        const ndn::Data &data, const std::string &uri,
-	                        const ndn::Name &prefix, DBEntry entry,
+	                        const ndn::Name &prefix, DBEntry &entry,
 	                        bool send_data);
 	static void onDestroyFaceDataReply(const ndn::Interest &interest,
-	                                   const ndn::Data &data);
+	                                   const ndn::Data &data, int face_id);
 	void addFaceAndPrefix(const std::string &uri, ndn::Name const &prefix,
-	                      DBEntry const &entry, bool send_data);
-	void removeRouteAndFace(const DBEntry &item);
+	                      DBEntry &entry, bool send_data);
+	void removeRouteAndFace(const ndn::Name &prefix, int faceId);
 	void destroyFace(int face_id);
 	void setIP();
 
@@ -71,7 +77,8 @@ class AHClient {
 	uint16_t m_port;
 	ndn::RegisteredPrefixHandle m_arrivePrefixId;
 	std::unique_ptr<ahnd::MulticastInterest> m_multicast;
-	std::list<DBEntry> m_db;
+	std::vector<DBEntry> m_db;
+	std::vector<long> m_db_free;
 };
 
 } // namespace ahnd

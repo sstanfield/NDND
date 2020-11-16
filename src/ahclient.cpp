@@ -41,8 +41,8 @@ static auto makeRibInterestParameter(const ndn::Name &route_name,
 	return block;
 }
 
-static auto makeRibUnregeisterInterestParameter(const ndn::Name &route_name,
-                                                int face_id) -> ndn::Block {
+static auto makeRibUnregisterInterestParameter(const ndn::Name &route_name,
+                                               int face_id) -> ndn::Block {
 	auto block = ndn::makeEmptyBlock(CONTROL_PARAMETERS);
 	const ndn::Block &route_name_block = route_name.wireEncode();
 	ndn::Block face_id_block =
@@ -83,7 +83,7 @@ static auto prepareRibUnregisterInterest(const ndn::Name &route_name,
     -> ndn::Interest {
 	ndn::Name name("/localhost/nfd/rib/unregister");
 	ndn::Block control_params =
-	    makeRibUnregeisterInterestParameter(route_name, face_id);
+	    makeRibUnregisterInterestParameter(route_name, face_id);
 	name.append(control_params);
 
 	ndn::security::CommandInterestSigner signer(keychain);
@@ -126,6 +126,8 @@ static auto prepareFaceDestroyInterest(int face_id, ndn::KeyChain &keychain)
 
 namespace ahnd {
 
+long DBEntry::count = 0;
+
 AHClient::AHClient(Name prefix, Name broadcast_prefix, int port)
     : m_prefix(std::move(prefix)),
       m_broadcast_prefix(std::move(broadcast_prefix)) {
@@ -145,15 +147,57 @@ void AHClient::appendIpPort(Name &name) {
 	    .append((uint8_t *)&m_port, sizeof(m_port));
 }
 
+auto AHClient::newItem() -> DBEntry & {
+	long idx = 0;
+	if (!m_db_free.empty()) {
+		idx = m_db_free.back();
+		m_db_free.pop_back();
+	} else {
+		idx = m_db.size();
+		DBEntry e;
+		m_db.push_back(e);
+	}
+	return m_db.at(idx);
+}
+
 auto AHClient::hasEntry(const Name &name) -> bool {
 	for (auto it = m_db.begin(); it != m_db.end();) {
-		bool is_prefix = it->prefix.isPrefixOf(name);
-		if (is_prefix) {
+		if (it->prefix.equals(name)) {
 			return true;
 		}
 		++it;
 	}
 	return false;
+}
+
+void AHClient::removeItem(const Name &name) {
+	long i = 0;
+	for (auto it = m_db.begin(); it != m_db.end();) {
+		if (it->prefix.equals(name)) {
+			cout << "AH Client: Removing by prefix " << it->id << ": "
+			     << it->prefix << " from DB" << endl;
+			it->prefix.clear();
+			m_db_free.push_back(i);
+			break;
+		}
+		i++;
+		++it;
+	}
+}
+
+void AHClient::removeItem(const DBEntry &item) {
+	long i = 0;
+	for (auto it = m_db.begin(); it != m_db.end();) {
+		if (it->id == item.id) {
+			cout << "AH Client: Removing by item " << it->id << ": "
+			     << it->prefix << " from DB" << endl;
+			it->prefix.clear();
+			m_db_free.push_back(i);
+			break;
+		}
+		i++;
+		++it;
+	}
 }
 
 void AHClient::registerClientPrefix() {
@@ -184,7 +228,7 @@ void AHClient::registerKeepAlivePrefix() {
 	m_face.setInterestFilter(
 	    InterestFilter(name),
 	    [this](const InterestFilter &filter, const Interest &request) {
-		    cout << "AH Client: Got keep alive " << endl;
+		    cout << "AH Client: Received a keep alive, responding." << endl;
 		    auto data = make_shared<Data>(request.getName());
 		    m_keyChain.sign(*data,
 		                    security::SigningInfo(
@@ -278,6 +322,7 @@ void AHClient::sendArrivalInterest() {
 // Handle direct or multicast interests that contain a single remotes face and
 // route information.
 void AHClient::onArriveInterest(const Interest &request, const bool send_back) {
+	cout << "AH Client: Got pier data " << request << endl;
 	// First setup the face and route the pier.
 	Name const &name = request.getName();
 	std::array<uint8_t, IP_BYTES> ip{};
@@ -288,9 +333,8 @@ void AHClient::onArriveInterest(const Interest &request, const bool send_back) {
 	ip_str.fill(0);
 	for (unsigned int i = 0; i < name.size(); i++) {
 		Name::Component const &component = name.get(i);
-		bool ret = (component.compare(Name::Component("arrival")) == 0) ||
-		           (component.compare(Name::Component("nd-info")) == 0);
-		if (ret) {
+		if ((component.compare(Name::Component("arrival")) == 0) ||
+		    (component.compare(Name::Component("nd-info")) == 0)) {
 			Name::Component comp;
 			// getIP
 			comp = name.get(i + 1);
@@ -319,6 +363,9 @@ void AHClient::onArriveInterest(const Interest &request, const bool send_back) {
 			          << " from " << ss_str << std::endl;
 
 			// Send back empty data to confirm I am here...
+			// This is used for both arrival broadcasts and direct nd-info so
+			// always send a response even though for arrivals it might be
+			// pointless.
 			auto data = make_shared<Data>(request.getName());
 			m_keyChain.sign(*data,
 			                security::SigningInfo(
@@ -328,15 +375,23 @@ void AHClient::onArriveInterest(const Interest &request, const bool send_back) {
 			// Do not register route to myself
 			// XXX- do better then a strcmp here...
 			if (strcmp(ip_str.data(), inet_ntoa(m_IP)) == 0) {
-				cout << "AH Client: My IP address returned - send back nothing"
-				     << endl;
+				cout << "AH Client: My IP address returned." << endl;
 				continue;
 			}
-			DBEntry entry;
-			entry.ip.swap(ip);
-			entry.port = port;
-			entry.prefix = prefix;
-			addFaceAndPrefix(ss_str, prefix, entry, send_back);
+			if (!hasEntry(prefix)) {
+				DBEntry &entry = newItem();
+				entry.ip.swap(ip);
+				entry.port = port;
+				entry.prefix = prefix;
+				addFaceAndPrefix(ss_str, prefix, entry, send_back);
+			} else {
+				// We already know about them but they may not know about us...
+				// Do not bother with removing face/route (keepalive should
+				// handle that).
+				if (send_back) {
+					sendData(prefix, 0);
+				}
+			}
 		}
 	}
 }
@@ -347,8 +402,9 @@ void AHClient::registerRoute(const Name &route_name, int face_id, int cost,
 	    prepareRibRegisterInterest(route_name, face_id, m_keyChain);
 	m_face.expressInterest(
 	    interest,
-	    [this, route_name, face_id, cost, send_data](auto &&PH1, auto &&PH2) {
-		    onRegisterRouteDataReply(PH1, PH2, route_name, face_id, cost,
+	    [this, route_name, face_id, cost, send_data](auto &&interest,
+	                                                 auto &&data) {
+		    onRegisterRouteDataReply(interest, data, route_name, face_id, cost,
 		                             send_data);
 	    },
 	    [this, route_name, face_id, cost, send_data](const Interest &interest,
@@ -375,8 +431,12 @@ void AHClient::registerRoute(const Name &route_name, int face_id, int cost,
 }
 
 void AHClient::sendKeepAliveInterest() {
-	for (auto it = m_db.begin(); it != m_db.end(); it = m_db.erase(it)) {
+	for (auto it = m_db.begin(); it != m_db.end();) {
+		// for (auto it = m_db.begin(); it != m_db.end(); it = m_db.erase(it)) {
 		const DBEntry item = *it;
+		if (item.prefix.empty()) {
+			continue;
+		}
 		Name name(item.prefix);
 		name.append("nd-keepalive");
 		name.appendTimestamp();
@@ -385,26 +445,39 @@ void AHClient::sendKeepAliveInterest() {
 		interest.setMustBeFresh(true);
 		interest.setNonce(4);
 		interest.setCanBePrefix(false);
+		// Send out a multicast arrival interest as well.  This will keep the
+		// multicast route active and may eventually correct any issues with a
+		// client not getting the initial broadcast.
+		// sendArrivalInterest();
 
+		cout << "AH Client: Sending keep alive to " << interest.getName()
+		     << endl;
 		m_face.expressInterest(
 		    interest,
-		    [this, item](const Interest &interest, const Data &data) {
-			    cout << "AH Client: Arrive keep alive data "
+		    [item](const Interest &interest, const Data &data) {
+			    cout << "AH Client: Got keep alive response from "
 			         << interest.getName() << endl;
-			    m_db.push_back(item);
 		    },
 		    [item, this](const Interest &interest, const lp::Nack &nack) {
-			    // Humm, log this and retry...
+			    // Humm, log this and remove.
 			    std::cout << "AH Client: received keep alive Nack with reason "
+			                 "(Removing) "
 			              << nack.getReason() << " for interest " << interest
 			              << std::endl;
-			    removeRouteAndFace(item);
+			    auto prefix = item.prefix;
+			    auto face_id = item.faceId;
+			    removeItem(item);
+			    removeRouteAndFace(prefix, face_id);
 		    },
 		    [item, this](const Interest &interest) {
-			    // This is odd (we should get a packet from ourselves)...
-			    std::cout << "AH Client: Keep alive timeout " << interest
-			              << std::endl;
+			    std::cout << "AH Client: Keep alive timeout (Removing) "
+			              << interest << std::endl;
+			    auto prefix = item.prefix;
+			    auto face_id = item.faceId;
+			    removeItem(item);
+			    removeRouteAndFace(prefix, face_id);
 		    });
+		++it;
 	}
 }
 
@@ -415,6 +488,68 @@ void AHClient::onNack(const Interest &interest, const lp::Nack &nack) {
 
 void AHClient::onTimeout(const Interest &interest) {
 	std::cout << "AH Client: Timeout " << interest << std::endl;
+}
+
+void AHClient::sendData(const Name &route_name, const int face_id, int count) {
+	// Then send back our info.
+	Name prefix(route_name);
+	prefix.append("nd-info");
+	appendIpPort(prefix);
+	prefix.appendNumber(m_prefix.size()).append(m_prefix).appendTimestamp();
+
+	std::cout << "AH Client: Sending my data to " << route_name << std::endl;
+	Interest interest(prefix);
+	interest.setInterestLifetime(INTEREST_LIFETIME);
+	interest.setMustBeFresh(true);
+	interest.setNonce(4);
+	interest.setCanBePrefix(false);
+
+	m_face.expressInterest(
+	    interest,
+	    [](const Interest &interest, const Data &data) {
+		    std::cout << "AH Client: Record Updated/Confirmed from "
+		              << data.getName() << std::endl;
+	    },
+	    //[this, route_name, faceId, count](const Interest &interest,
+	    [=](const Interest &interest, const lp::Nack &nack) {
+		    std::cout << "AH Client: Received Nack with reason "
+		              << nack.getReason() << " for interest " << interest
+		              << std::endl;
+		    if (count < 4) {
+			    m_scheduler->schedule(time::seconds(3 * count),
+			                          [this, route_name, face_id, count] {
+				                          sendData(route_name, face_id,
+				                                   count + 1);
+			                          });
+		    } else {
+			    cout << "Giving up on pier " << route_name << endl;
+			    if (face_id > 0) {
+				    removeItem(route_name);
+				    cout << "Removing face and route for " << route_name
+				         << endl;
+				    removeRouteAndFace(route_name, face_id);
+			    }
+		    }
+	    },
+	    [=](const Interest &interest) {
+		    std::cout << "AH Client: Received timeout for interest " << interest
+		              << std::endl;
+		    if (count < 4) {
+			    m_scheduler->schedule(time::seconds(3 * count),
+			                          [this, route_name, face_id, count] {
+				                          sendData(route_name, face_id,
+				                                   count + 1);
+			                          });
+		    } else {
+			    cout << "Giving up on pier " << route_name << endl;
+			    if (face_id > 0) {
+				    removeItem(route_name);
+				    cout << "Removing face and route for " << route_name
+				         << endl;
+				    removeRouteAndFace(route_name, face_id);
+			    }
+		    }
+	    });
 }
 
 void AHClient::onRegisterRouteDataReply(const Interest &interest,
@@ -439,10 +574,10 @@ void AHClient::onRegisterRouteDataReply(const Interest &interest,
 		Block const &control_params = response_block.get(CONTROL_PARAMETERS);
 		control_params.parse();
 
-		Block const &name_block = control_params.get(ndn::tlv::Name);
-		Name route_name(name_block);
-		Block const &face_id_block = control_params.get(FACE_ID);
-		int face_id = readNonNegativeIntegerAs<int>(face_id_block);
+		// Block const &name_block = control_params.get(ndn::tlv::Name);
+		// Name route_name(name_block);
+		// Block const &face_id_block = control_params.get(FACE_ID);
+		// int face_id = readNonNegativeIntegerAs<int>(face_id_block);
 		Block const &origin_block = control_params.get(ORIGIN);
 		int origin = readNonNegativeIntegerAs<int>(origin_block);
 		Block const &route_cost_block = control_params.get(COST);
@@ -459,49 +594,7 @@ void AHClient::onRegisterRouteDataReply(const Interest &interest,
 		std::cout << "Route cost: " << route_cost << std::endl;
 		std::cout << "Flags: " << flags << std::endl;
 		if (send_data) {
-			// Then send back our info.
-			Name prefix(route_name);
-			prefix.append("nd-info");
-			appendIpPort(prefix);
-			prefix.appendNumber(m_prefix.size())
-			    .append(m_prefix)
-			    .appendTimestamp();
-
-			std::cout << "AH Client: Subscribe Back to " << prefix << std::endl;
-			Interest interest(prefix);
-			interest.setInterestLifetime(INTEREST_LIFETIME);
-			interest.setMustBeFresh(true);
-			interest.setNonce(4);
-			interest.setCanBePrefix(false);
-
-			m_face.expressInterest(
-			    interest,
-			    [](const Interest &interest, const Data &data) {
-				    std::cout << "AH Client: Record Updated/Confirmed from "
-				              << data.getName() << std::endl;
-			    },
-			    [this, route_name, face_id, cost,
-			     send_data](const Interest &interest, const lp::Nack &nack) {
-				    std::cout << "AH Client: Received Nack with reason "
-				              << nack.getReason() << " for interest "
-				              << interest << std::endl;
-				    m_scheduler->schedule(
-				        time::seconds(3),
-				        [this, route_name, face_id, cost, send_data] {
-					        registerRoute(route_name, face_id, cost, send_data);
-				        });
-			    },
-			    [this, route_name, face_id, cost,
-			     send_data](const Interest &interest) {
-				    std::cout << "AH Client: Received timeout for interest "
-				              << interest << std::endl;
-				    // XXX removeRoute(findEntry(interest.getName()));
-				    m_scheduler->schedule(
-				        time::seconds(3),
-				        [this, route_name, face_id, cost, send_data] {
-					        registerRoute(route_name, face_id, cost, send_data);
-				        });
-			    });
+			sendData(route_name, face_id);
 		}
 	} else {
 		std::cout << "\nRegistration of route failed." << std::endl;
@@ -515,7 +608,7 @@ void AHClient::onRegisterRouteDataReply(const Interest &interest,
 
 void AHClient::onAddFaceDataReply(const Interest &interest, const Data &data,
                                   const string &uri, const Name &prefix,
-                                  DBEntry entry, const bool send_data) {
+                                  DBEntry &entry, const bool send_data) {
 	short response_code = 0;
 	std::array<char, BUF_SIZE> response_text{0};
 	response_text.fill(0);
@@ -541,93 +634,97 @@ void AHClient::onAddFaceDataReply(const Interest &interest, const Data &data,
 		          << std::endl;
 
 		entry.faceId = face_id;
-		if (!hasEntry(entry.prefix)) {
-			m_db.push_back(entry);
-		}
 		registerRoute(prefix, face_id, 0, send_data);
 	} else {
 		std::cout << "\nCreation of face failed." << std::endl;
 		std::cout << "Status text: " << response_text.data() << std::endl;
 		m_scheduler->schedule(
-		    time::seconds(3), [this, uri, prefix, entry, send_data] {
+		    time::seconds(3), [this, uri, prefix, &entry, send_data] {
 			    addFaceAndPrefix(uri, prefix, entry, send_data);
 		    });
 	}
 }
 
 void AHClient::onDestroyFaceDataReply(const Interest &interest,
-                                      const Data &data) {
+                                      const Data &data, const int face_id) {
 	short response_code = 0;
 	std::array<char, BUF_SIZE> response_text{0};
-	int face_id = 0;
 	Block response_block = data.getContent().blockFromValue();
 	response_block.parse();
 
 	Block const &status_code_block = response_block.get(STATUS_CODE);
 	Block const &status_text_block = response_block.get(STATUS_TEXT);
-	Block const &status_parameter_block =
-	    response_block.get(CONTROL_PARAMETERS);
 	response_code = *(short *)status_code_block.value(); // NOLINT
 	response_text.fill(0);
 	memcpy(response_text.data(), status_text_block.value(),
 	       status_text_block.value_size());
 
-	status_parameter_block.parse();
-	Block const &face_id_block = status_parameter_block.get(FACE_ID);
-	face_id = ntohs(*(int *)face_id_block.value()); // NOLINT
-
-	std::cout << response_code << " " << response_text.data()
-	          << ": Destroyed Face (FaceId: " << face_id << ")" << std::endl;
+	std::cout << "AH Client: Destroy face id: " << face_id
+	          << " response: " << response_code << ": " << response_text.data()
+	          << std::endl;
 }
 
 void AHClient::addFaceAndPrefix(const string &uri, Name const &prefix,
-                                DBEntry const &entry, const bool send_data) {
+                                DBEntry &entry, const bool send_data) {
 	cout << "AH Client: Adding face: " << uri << endl;
 	Interest interest = prepareFaceCreationInterest(uri, m_keyChain);
 	m_face.expressInterest(
 	    interest,
-	    [this, uri, prefix, entry, send_data](auto &&PH1, auto &&PH2) {
-		    onAddFaceDataReply(PH1, PH2, uri, prefix, entry, send_data);
+	    [this, uri, prefix, &entry, send_data](auto &&interest, auto &&data) {
+		    onAddFaceDataReply(interest, data, uri, prefix, entry, send_data);
 	    },
-	    [this, uri, prefix, entry, send_data](const Interest &interest,
-	                                          const lp::Nack &nack) {
+	    [this, uri, prefix, &entry, send_data](const Interest &interest,
+	                                           const lp::Nack &nack) {
 		    std::cout << "AH Client: Received Nack with reason "
 		              << nack.getReason() << " for interest " << interest
 		              << std::endl;
 		    m_scheduler->schedule(
-		        time::seconds(3), [this, uri, prefix, entry, send_data] {
+		        time::seconds(3), [this, uri, prefix, &entry, send_data] {
 			        addFaceAndPrefix(uri, prefix, entry, send_data);
 		        });
 	    },
-	    [this, uri, prefix, entry, send_data](const Interest &interest) {
+	    [this, uri, prefix, &entry, send_data](const Interest &interest) {
 		    std::cout << "AH Client: Received timeout when adding face "
 		              << interest << std::endl;
 		    m_scheduler->schedule(
-		        time::seconds(3), [this, uri, prefix, entry, send_data] {
+		        time::seconds(3), [this, uri, prefix, &entry, send_data] {
 			        addFaceAndPrefix(uri, prefix, entry, send_data);
 		        });
 	    });
 }
 
-void AHClient::removeRouteAndFace(const DBEntry &item) {
+void AHClient::removeRouteAndFace(const Name &prefix, const int faceId) {
 	// Shutdown route/face.
+	std::cout << "AH Client: Removing route " << prefix << " and face "
+	          << faceId << endl;
+	cout << "XXXX Not really doing remove, it seems to break the client..."
+	     << endl;
+	return;
 	auto unreg_interest =
-	    prepareRibUnregisterInterest(item.prefix, item.faceId, m_keyChain);
+	    prepareRibUnregisterInterest(prefix, faceId, m_keyChain);
 	m_face.expressInterest(
 	    unreg_interest,
-	    [item, this](const Interest &interest, const Data &data) {
-		    destroyFace(item.faceId);
+	    [faceId, this](const Interest &interest, const Data &data) {
+		    destroyFace(faceId);
 	    },
-	    nullptr, nullptr);
+	    [](auto &&interest, auto &&nack) { onNack(interest, nack); },
+	    [](auto &&interest) { onTimeout(interest); });
 }
 
 void AHClient::destroyFace(int face_id) {
-	Interest interest = prepareFaceDestroyInterest(face_id, m_keyChain);
-	m_face.expressInterest(
-	    interest,
-	    [](auto &&PH1, auto &&PH2) { onDestroyFaceDataReply(PH1, PH2); },
-	    [](auto &&PH1, auto &&PH2) { onNack(PH1, PH2); },
-	    [](auto &&PH1) { onTimeout(PH1); });
+	if (face_id > 0) {
+		Interest interest = prepareFaceDestroyInterest(face_id, m_keyChain);
+		m_face.expressInterest(
+		    interest,
+		    [face_id](auto &&interest, auto &&data) {
+			    onDestroyFaceDataReply(interest, data, face_id);
+		    },
+		    [](auto &&interest, auto &&nack) { onNack(interest, nack); },
+		    [](auto &&interest) { onTimeout(interest); });
+	} else {
+		cout << "AH Client: Not removing face id, we did not create it."
+		     << endl;
+	}
 }
 
 void AHClient::setIP() {
@@ -652,7 +749,6 @@ void AHClient::setIP() {
 		s = getnameinfo(ifa->ifa_addr, sizeof(struct sockaddr_in), host.data(),
 		                NI_MAXHOST, nullptr, 0, NI_NUMERICHOST);
 		if (s != 0) {
-			// cout << "getnameinfo() failed: " << gai_strerror(s) << endl;
 			continue;
 		}
 
