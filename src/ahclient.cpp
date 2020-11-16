@@ -435,6 +435,7 @@ void AHClient::sendKeepAliveInterest() {
 		// for (auto it = m_db.begin(); it != m_db.end(); it = m_db.erase(it)) {
 		const DBEntry item = *it;
 		if (item.prefix.empty()) {
+			++it;
 			continue;
 		}
 		Name name(item.prefix);
@@ -697,9 +698,6 @@ void AHClient::removeRouteAndFace(const Name &prefix, const int faceId) {
 	// Shutdown route/face.
 	std::cout << "AH Client: Removing route " << prefix << " and face "
 	          << faceId << endl;
-	cout << "XXXX Not really doing remove, it seems to break the client..."
-	     << endl;
-	return;
 	auto unreg_interest =
 	    prepareRibUnregisterInterest(prefix, faceId, m_keyChain);
 	m_face.expressInterest(
