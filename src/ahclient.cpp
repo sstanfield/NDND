@@ -322,77 +322,82 @@ void AHClient::sendArrivalInterest() {
 // Handle direct or multicast interests that contain a single remotes face and
 // route information.
 void AHClient::onArriveInterest(const Interest &request, const bool send_back) {
-	cout << "AH Client: Got pier data " << request << endl;
-	// First setup the face and route the pier.
-	Name const &name = request.getName();
-	std::array<uint8_t, IP_BYTES> ip{};
-	ip.fill(0);
-	uint16_t port = 0;
-	const int ip_str_len = 256;
-	std::array<char, ip_str_len> ip_str{};
-	ip_str.fill(0);
-	for (unsigned int i = 0; i < name.size(); i++) {
-		Name::Component const &component = name.get(i);
-		if ((component.compare(Name::Component("arrival")) == 0) ||
-		    (component.compare(Name::Component("nd-info")) == 0)) {
-			Name::Component comp;
-			// getIP
-			comp = name.get(i + 1);
-			memcpy(ip.data(), comp.value(), IP_BYTES);
-			// NOLINTNEXTLINE(cppcoreguidelines-pro-type-cstyle-cast)
-			char *t_ip = inet_ntoa(*(in_addr *)(ip.data()));
-			unsigned long ip_len = strlen(t_ip) + 1;
-			memcpy(ip_str.data(), t_ip,
-			       ip_len >= ip_str_len ? ip_str_len - 1 : ip_len);
-			// getPort
-			comp = name.get(i + 2);
-			memcpy(&port, comp.value(), sizeof(port));
-			// getName
-			comp = name.get(i + 3);
-			unsigned int begin = i + 3;
-			Name prefix;
-			uint64_t name_size = comp.toNumber();
-			for (unsigned int j = 0; j < name_size; j++) {
-				prefix.append(name.get(begin + j + 1));
-			}
+	try {
+		cout << "AH Client: Got pier data " << request << endl;
+		// First setup the face and route the pier.
+		Name const &name = request.getName();
+		std::array<uint8_t, IP_BYTES> ip{};
+		ip.fill(0);
+		uint16_t port = 0;
+		const int ip_str_len = 256;
+		std::array<char, ip_str_len> ip_str{};
+		ip_str.fill(0);
+		for (unsigned int i = 0; i < name.size(); i++) {
+			Name::Component const &component = name.at(i);
+			if ((component.compare(Name::Component("arrival")) == 0) ||
+			    (component.compare(Name::Component("nd-info")) == 0)) {
+				Name::Component comp;
+				// getIP
+				comp = name.at(i + 1);
+				memcpy(ip.data(), comp.value(), IP_BYTES);
+				// NOLINTNEXTLINE(cppcoreguidelines-pro-type-cstyle-cast)
+				char *t_ip = inet_ntoa(*(in_addr *)(ip.data()));
+				unsigned long ip_len = strlen(t_ip) + 1;
+				memcpy(ip_str.data(), t_ip,
+				       ip_len >= ip_str_len ? ip_str_len - 1 : ip_len);
+				// getPort
+				comp = name.at(i + 2);
+				memcpy(&port, comp.value(), sizeof(port));
+				// getName
+				comp = name.at(i + 3);
+				unsigned int begin = i + 3;
+				Name prefix;
+				uint64_t name_size = comp.toNumber();
+				for (unsigned int j = 0; j < name_size; j++) {
+					prefix.append(name.at(begin + j + 1));
+				}
 
-			std::stringstream ss;
-			ss << "udp4://" << ip_str.data() << ':' << ntohs(port);
-			auto ss_str = ss.str();
-			std::cout << "AH Client: Arrival Name is " << prefix.toUri()
-			          << " from " << ss_str << std::endl;
+				std::stringstream ss;
+				ss << "udp4://" << ip_str.data() << ':' << ntohs(port);
+				auto ss_str = ss.str();
+				std::cout << "AH Client: Arrival Name is " << prefix.toUri()
+				          << " from " << ss_str << std::endl;
 
-			// Send back empty data to confirm I am here...
-			// This is used for both arrival broadcasts and direct nd-info so
-			// always send a response even though for arrivals it might be
-			// pointless.
-			auto data = make_shared<Data>(request.getName());
-			m_keyChain.sign(*data,
-			                security::SigningInfo(
-			                    security::SigningInfo::SIGNER_TYPE_SHA256));
-			data->setFreshnessPeriod(time::milliseconds(FRESHNESS_MS));
-			m_face.put(*data);
-			// Do not register route to myself
-			// XXX- do better then a strcmp here...
-			if (strcmp(ip_str.data(), inet_ntoa(m_IP)) == 0) {
-				cout << "AH Client: My IP address returned." << endl;
-				continue;
-			}
-			if (!hasEntry(prefix)) {
-				DBEntry &entry = newItem();
-				entry.ip.swap(ip);
-				entry.port = port;
-				entry.prefix = prefix;
-				addFaceAndPrefix(ss_str, prefix, entry, send_back);
-			} else {
-				// We already know about them but they may not know about us...
-				// Do not bother with removing face/route (keepalive should
-				// handle that).
-				if (send_back) {
-					sendData(prefix, 0);
+				// Send back empty data to confirm I am here...
+				// This is used for both arrival broadcasts and direct nd-info
+				// so always send a response even though for arrivals it might
+				// be pointless.
+				auto data = make_shared<Data>(request.getName());
+				m_keyChain.sign(*data,
+				                security::SigningInfo(
+				                    security::SigningInfo::SIGNER_TYPE_SHA256));
+				data->setFreshnessPeriod(time::milliseconds(FRESHNESS_MS));
+				m_face.put(*data);
+				// Do not register route to myself
+				// XXX- do better then a strcmp here...
+				if (strcmp(ip_str.data(), inet_ntoa(m_IP)) == 0) {
+					cout << "AH Client: My IP address returned." << endl;
+					continue;
+				}
+				if (!hasEntry(prefix)) {
+					DBEntry &entry = newItem();
+					entry.ip.swap(ip);
+					entry.port = port;
+					entry.prefix = prefix;
+					addFaceAndPrefix(ss_str, prefix, entry, send_back);
+				} else {
+					// We already know about them but they may not know about
+					// us... Do not bother with removing face/route (keepalive
+					// should handle that).
+					if (send_back) {
+						sendData(prefix, 0);
+					}
 				}
 			}
 		}
+	} catch (const std::runtime_error &e) {
+		cout << "AH Client: ERROR on request " << request
+		     << ", message: " << e.what() << endl;
 	}
 }
 
