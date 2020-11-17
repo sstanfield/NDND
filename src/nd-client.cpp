@@ -7,7 +7,7 @@ using namespace ahnd;
 using namespace std;
 
 const Name BROADCAST_PREFIX("/ahnd");
-constexpr int KEEPALIVE_SECONDS = 10; // 300;
+constexpr int KEEPALIVE_SECONDS = 300;
 constexpr int DEFAULT_PORT = 6363;
 
 class Program {

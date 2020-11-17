@@ -454,7 +454,7 @@ void AHClient::sendKeepAliveInterest() {
 		// Send out a multicast arrival interest as well.  This will keep the
 		// multicast route active and may eventually correct any issues with a
 		// client not getting the initial broadcast.
-		// sendArrivalInterest();
+		sendArrivalInterest();
 
 		cout << "AH Client: Sending keep alive to " << interest.getName()
 		     << endl;
