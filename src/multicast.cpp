@@ -20,11 +20,16 @@ MulticastInterest::MulticastInterest(
       m_prefix(std::move(prefix)) {
 	m_ready = false;
 	m_error = false;
+}
+
+void MulticastInterest::reset() {
+	m_ready = false;
+	m_error = false;
 	nfd::FaceQueryFilter filter;
 	filter.setLinkType(nfd::LINK_TYPE_MULTI_ACCESS);
 
 	m_controller->fetch<nfd::FaceQueryDataset>(
-	    filter, [this](auto &&PH1) { registerMultiPrefix(PH1); },
+	    filter, [this](auto &&dataset) { registerMultiPrefix(dataset); },
 	    [this](uint32_t code, const std::string &reason) {
 		    cout << "AHND (Multicast): Error " << to_string(code)
 		         << " when querying multi-access faces: " << reason << endl;

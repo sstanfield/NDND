@@ -26,6 +26,7 @@ class MulticastInterest {
 	MulticastInterest(ndn::Face &face,
 	                  std::shared_ptr<ndn::nfd::Controller> controller,
 	                  ndn::Name prefix);
+	void reset();
 	auto isReady() const { return m_ready; }
 	auto isError() const { return m_error; }
 	void expressInterest(const ndn::Interest &interest,

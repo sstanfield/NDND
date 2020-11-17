@@ -270,7 +270,7 @@ void AHClient::registerArrivePrefix() {
 	    });
 }
 
-void AHClient::sendArrivalInterest() {
+void AHClient::sendArrivalInterestInternal() {
 	if (m_multicast->isError()) {
 		cout << "AH Client: Multicast error, exiting" << endl;
 		exit(1);
@@ -303,8 +303,9 @@ void AHClient::sendArrivalInterest() {
 			    std::cout << "AH Client: received Nack with reason "
 			              << nack.getReason() << " for interest " << interest
 			              << std::endl;
-			    m_scheduler->schedule(time::seconds(3),
-			                          [this] { sendArrivalInterest(); });
+			    m_scheduler->schedule(time::seconds(3), [this] {
+				    sendArrivalInterestInternal();
+			    });
 		    },
 		    [](const Interest &interest) {
 			    // This is odd (we should get a packet from ourselves)...
@@ -315,8 +316,13 @@ void AHClient::sendArrivalInterest() {
 		cout << "AH Client: Arrival Interest, multicast not ready will retry"
 		     << endl;
 		m_scheduler->schedule(time::seconds(3),
-		                      [this] { sendArrivalInterest(); });
+		                      [this] { sendArrivalInterestInternal(); });
 	}
+}
+
+void AHClient::sendArrivalInterest() {
+	m_multicast->reset();
+	sendArrivalInterestInternal();
 }
 
 // Handle direct or multicast interests that contain a single remotes face and
@@ -436,6 +442,10 @@ void AHClient::registerRoute(const Name &route_name, int face_id, int cost,
 }
 
 void AHClient::sendKeepAliveInterest() {
+	// Send out a multicast arrival interest as well.  This will keep the
+	// multicast route active and may eventually correct any issues with a
+	// client not getting the initial broadcast.
+	sendArrivalInterest();
 	for (auto it = m_db.begin(); it != m_db.end();) {
 		// for (auto it = m_db.begin(); it != m_db.end(); it = m_db.erase(it)) {
 		const DBEntry item = *it;
@@ -451,10 +461,6 @@ void AHClient::sendKeepAliveInterest() {
 		interest.setMustBeFresh(true);
 		interest.setNonce(4);
 		interest.setCanBePrefix(false);
-		// Send out a multicast arrival interest as well.  This will keep the
-		// multicast route active and may eventually correct any issues with a
-		// client not getting the initial broadcast.
-		sendArrivalInterest();
 
 		cout << "AH Client: Sending keep alive to " << interest.getName()
 		     << endl;

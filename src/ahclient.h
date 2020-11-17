@@ -41,6 +41,7 @@ class AHClient {
 	void registerClientPrefix();
 	void registerKeepAlivePrefix();
 	void registerArrivePrefix();
+	void sendArrivalInterestInternal();
 	void sendArrivalInterest();
 	// Handle direct or multicast interests that contain a single remotes face
 	// and route information.
