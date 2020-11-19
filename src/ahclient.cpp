@@ -240,13 +240,48 @@ void AHClient::registerKeepAlivePrefix() {
 		    std::cout << "AH Client: Registered client prefix " << name.toUri()
 		              << std::endl;
 		    // Now register broadcast prefix.
-		    registerArrivePrefix();
+		    registerPingPrefix();
 	    },
 	    [this](const Name &name, const std::string &error) {
 		    std::cout << "AH Client: Failed to register client prefix "
 		              << name.toUri() << " reason: " << error << std::endl;
 		    m_scheduler->schedule(time::seconds(3),
 		                          [this] { registerKeepAlivePrefix(); });
+	    });
+}
+
+void AHClient::registerPingPrefix() {
+	Name name(m_prefix);
+	name.append("ping");
+	cout << "AH Client: Registering Ping Prefix: " << name << endl;
+	m_face.setInterestFilter(
+	    InterestFilter(name),
+	    [this](const InterestFilter &filter, const Interest &request) {
+		    cout << "AH Client: Received a ping, responding." << endl;
+		    auto data = make_shared<Data>(request.getName());
+		    data->setFreshnessPeriod(time::milliseconds(FRESHNESS_MS));
+		    auto b = make_shared<Buffer>();
+		    auto const payload_size = 5; // Arbitrary size.
+		    b->assign(payload_size, 'a');
+		    auto payload = Block(tlv::Content, std::move(b));
+		    data->setContent(payload);
+		    m_keyChain.sign(*data,
+		                    security::SigningInfo(
+		                        security::SigningInfo::SIGNER_TYPE_SHA256));
+		    data->setFreshnessPeriod(time::milliseconds(FRESHNESS_MS));
+		    m_face.put(*data);
+	    },
+	    [this](const Name &name) {
+		    std::cout << "AH Client: Registered client ping prefix "
+		              << name.toUri() << std::endl;
+		    // Now register broadcast prefix.
+		    registerArrivePrefix();
+	    },
+	    [this](const Name &name, const std::string &error) {
+		    std::cout << "AH Client: Failed to register client ping prefix "
+		              << name.toUri() << " reason: " << error << std::endl;
+		    m_scheduler->schedule(time::seconds(3),
+		                          [this] { registerPingPrefix(); });
 	    });
 }
 

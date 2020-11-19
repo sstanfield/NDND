@@ -40,6 +40,7 @@ class AHClient {
 	void removeItem(const DBEntry &item);
 	void registerClientPrefix();
 	void registerKeepAlivePrefix();
+	void registerPingPrefix();
 	void registerArrivePrefix();
 	void sendArrivalInterestInternal();
 	void sendArrivalInterest();
