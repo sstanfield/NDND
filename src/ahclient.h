@@ -28,9 +28,10 @@ class AHClient {
   public:
 	AHClient(ndn::Name m_prefix, ndn::Name broadcast_prefix, int port);
 	void registerPrefixes() { registerClientPrefix(); }
-	void processEvents() { m_face.processEvents(); }
+	void processEvents(long timeout_ms);
 	void sendKeepAliveInterest();
 	auto face() -> ndn::Face & { return m_face; }
+	void shutdown();
 
   private:
 	void appendIpPort(ndn::Name &name);
@@ -44,6 +45,8 @@ class AHClient {
 	void registerArrivePrefix();
 	void sendArrivalInterestInternal();
 	void sendArrivalInterest();
+	void sendDepartureInterestInternal();
+	void sendDepartureInterest();
 	// Handle direct or multicast interests that contain a single remotes face
 	// and route information.
 	void onArriveInterest(const ndn::Interest &request, bool send_back);

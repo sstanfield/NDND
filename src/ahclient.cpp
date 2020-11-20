@@ -200,6 +200,28 @@ void AHClient::removeItem(const DBEntry &item) {
 	}
 }
 
+void AHClient::processEvents(long timeout_ms) {
+	m_face.processEvents(time::milliseconds(timeout_ms));
+}
+
+void AHClient::shutdown() {
+	cout << "AH Client: Shutting down" << endl;
+	sendDepartureInterest();
+	// Remove all the piers.
+	for (auto it = m_db.begin(); it != m_db.end();) {
+		const DBEntry item = *it;
+		if (item.prefix.empty()) {
+			++it;
+			continue;
+		}
+		auto prefix = item.prefix;
+		auto face_id = item.faceId;
+		removeItem(item);
+		removeRouteAndFace(prefix, face_id);
+		++it;
+	}
+}
+
 void AHClient::registerClientPrefix() {
 	Name name(m_prefix);
 	name.append("nd-info");
@@ -360,6 +382,59 @@ void AHClient::sendArrivalInterest() {
 	sendArrivalInterestInternal();
 }
 
+void AHClient::sendDepartureInterestInternal() {
+	if (m_multicast->isError()) {
+		cout << "AH Client: ERROR: Multicast error departure interest." << endl;
+		return;
+	}
+	if (m_multicast->isReady()) {
+		Name name(m_broadcast_prefix);
+		name.append("departure");
+		appendIpPort(name);
+		name.appendNumber(m_prefix.size()).append(m_prefix).appendTimestamp();
+
+		Interest interest(name);
+		interest.setInterestLifetime(SERVER_DISCOVERY_INTEREST_LIFETIME);
+		interest.setMustBeFresh(true);
+		interest.setNonce(4);
+		interest.setCanBePrefix(true);
+
+		cout << "AH Client: Departure Interest: " << interest << endl;
+
+		m_multicast->expressInterest(
+		    interest,
+		    [](const Interest &interest, const Data &data) {
+			    // Since this is multicast and we are
+			    // listening, this will almost always be from 'us',
+			    // Remotes will send an interest to the client prefix.
+			    cout << "AH Client: Departure data " << interest.getName()
+			         << endl;
+		    },
+		    [this](const Interest &interest, const lp::Nack &nack) {
+			    // Humm, log this and retry...
+			    std::cout << "AH Client: Departure interest received Nack "
+			                 "(will ignore) with reason "
+			              << nack.getReason() << " for interest " << interest
+			              << std::endl;
+		    },
+		    [](const Interest &interest) {
+			    // This is odd (we should get a packet from ourselves)...
+			    std::cout << "AH Client: Depart Timeout (I am all alone?) "
+			              << interest << std::endl;
+		    });
+	} else {
+		cout << "AH Client: Departure Interest, multicast not ready will retry"
+		     << endl;
+		m_scheduler->schedule(time::seconds(1),
+		                      [this] { sendDepartureInterestInternal(); });
+	}
+}
+
+void AHClient::sendDepartureInterest() {
+	m_multicast->reset();
+	sendDepartureInterestInternal();
+}
+
 // Handle direct or multicast interests that contain a single remotes face and
 // route information.
 void AHClient::onArriveInterest(const Interest &request, const bool send_back) {
@@ -375,7 +450,10 @@ void AHClient::onArriveInterest(const Interest &request, const bool send_back) {
 		ip_str.fill(0);
 		for (unsigned int i = 0; i < name.size(); i++) {
 			Name::Component const &component = name.at(i);
+			auto departure =
+			    (component.compare(Name::Component("departure")) == 0);
 			if ((component.compare(Name::Component("arrival")) == 0) ||
+			    departure ||
 			    (component.compare(Name::Component("nd-info")) == 0)) {
 				Name::Component comp;
 				// getIP
@@ -401,8 +479,14 @@ void AHClient::onArriveInterest(const Interest &request, const bool send_back) {
 				std::stringstream ss;
 				ss << "udp4://" << ip_str.data() << ':' << ntohs(port);
 				auto ss_str = ss.str();
-				std::cout << "AH Client: Arrival Name is " << prefix.toUri()
-				          << " from " << ss_str << std::endl;
+				if (departure) {
+					std::cout << "AH Client: Departure Name is "
+					          << prefix.toUri() << " from " << ss_str
+					          << std::endl;
+				} else {
+					std::cout << "AH Client: Arrival Name is " << prefix.toUri()
+					          << " from " << ss_str << std::endl;
+				}
 
 				// Send back empty data to confirm I am here...
 				// This is used for both arrival broadcasts and direct nd-info
@@ -420,18 +504,34 @@ void AHClient::onArriveInterest(const Interest &request, const bool send_back) {
 					cout << "AH Client: My IP address returned." << endl;
 					continue;
 				}
-				if (!hasEntry(prefix)) {
-					DBEntry &entry = newItem();
-					entry.ip.swap(ip);
-					entry.port = port;
-					entry.prefix = prefix;
-					addFaceAndPrefix(ss_str, prefix, entry, send_back);
+				if (departure) {
+					int db_i = 0;
+					for (auto it = m_db.begin(); it != m_db.end();) {
+						if (it->prefix.equals(prefix)) {
+							cout << "AH Client: Found record, removing route "
+							        "and face."
+							     << endl;
+							removeRouteAndFace(prefix, it->faceId);
+							it->prefix.clear();
+							m_db_free.push_back(db_i);
+						}
+						db_i++;
+						++it;
+					}
 				} else {
-					// We already know about them but they may not know about
-					// us... Do not bother with removing face/route (keepalive
-					// should handle that).
-					if (send_back) {
-						sendData(prefix, 0);
+					if (!hasEntry(prefix)) {
+						DBEntry &entry = newItem();
+						entry.ip.swap(ip);
+						entry.port = port;
+						entry.prefix = prefix;
+						addFaceAndPrefix(ss_str, prefix, entry, send_back);
+					} else {
+						// We already know about them but they may not know
+						// about us... Do not bother with removing face/route
+						// (keepalive should handle that).
+						if (send_back) {
+							sendData(prefix, 0);
+						}
 					}
 				}
 			}
