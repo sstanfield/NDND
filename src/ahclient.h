@@ -4,25 +4,30 @@
 #include <netinet/in.h>
 
 #include "multicast.h"
+#include "statusinfo.h"
 
 namespace ahnd {
 
-const int IP_BYTES = 16;
-
 struct DBEntry {
-	static long count;
 	const long id;
-	std::array<uint8_t, IP_BYTES> ip{};
+	struct in_addr ip {
+		0
+	};
 	uint16_t port;
 	ndn::Name prefix;
 	int faceId;
 
 	DBEntry() : id(count++) {
-		ip.fill(0);
 		port = 0;
 		faceId = 0;
 	}
+
+  private:
+	// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
+	static long count;
 };
+
+using VisitPiersCallback = std::function<void(const DBEntry &pier)>;
 
 class AHClient {
   public:
@@ -32,6 +37,11 @@ class AHClient {
 	void sendKeepAliveInterest();
 	auto face() -> ndn::Face & { return m_face; }
 	void shutdown();
+	void getStatus(const StatusCallback &statusCallback,
+	               const StatusErrorCallback &errorCallback) {
+		m_statusinfo->getStatus(statusCallback, errorCallback);
+	}
+	void visitPiers(const VisitPiersCallback &callback);
 
   private:
 	void appendIpPort(ndn::Name &name);
@@ -82,6 +92,7 @@ class AHClient {
 	uint16_t m_port;
 	ndn::RegisteredPrefixHandle m_arrivePrefixId;
 	std::unique_ptr<ahnd::MulticastInterest> m_multicast;
+	std::unique_ptr<ahnd::StatusInfo> m_statusinfo;
 	std::vector<DBEntry> m_db;
 	std::vector<long> m_db_free;
 };

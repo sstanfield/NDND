@@ -32,7 +32,7 @@ void MulticastInterest::reset() {
 	    filter, [this](auto &&dataset) { registerMultiPrefix(dataset); },
 	    [this](uint32_t code, const std::string &reason) {
 		    cout << "AHND (Multicast): Error " << to_string(code)
-		         << " when querying multi-access faces: " << reason << endl;
+		         << " when querying multi-access m_faces: " << reason << endl;
 		    m_error = true;
 	    });
 }
@@ -86,7 +86,7 @@ void MulticastInterest::afterReg(int n_reg_success) {
 void MulticastInterest::registerMultiPrefix(
     const std::vector<nfd::FaceStatus> &dataset) {
 	if (dataset.empty()) {
-		cout << "AHND (Multicast): No multi-access faces available" << endl;
+		cout << "AHND (Multicast): No multi-access m_faces available" << endl;
 		m_error = true;
 	}
 

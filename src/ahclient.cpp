@@ -126,6 +126,7 @@ static auto prepareFaceDestroyInterest(int face_id, ndn::KeyChain &keychain)
 
 namespace ahnd {
 
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
 long DBEntry::count = 0;
 
 AHClient::AHClient(Name prefix, Name broadcast_prefix, int port)
@@ -137,6 +138,7 @@ AHClient::AHClient(Name prefix, Name broadcast_prefix, int port)
 	m_port = htons(port);
 	m_multicast = std::make_unique<MulticastInterest>(m_face, m_controller,
 	                                                  m_broadcast_prefix);
+	m_statusinfo = std::make_unique<StatusInfo>(m_controller);
 }
 
 void AHClient::appendIpPort(Name &name) {
@@ -442,12 +444,8 @@ void AHClient::onArriveInterest(const Interest &request, const bool send_back) {
 		cout << "AH Client: Got pier data " << request << endl;
 		// First setup the face and route the pier.
 		Name const &name = request.getName();
-		std::array<uint8_t, IP_BYTES> ip{};
-		ip.fill(0);
+		struct in_addr ip {};
 		uint16_t port = 0;
-		const int ip_str_len = 256;
-		std::array<char, ip_str_len> ip_str{};
-		ip_str.fill(0);
 		for (unsigned int i = 0; i < name.size(); i++) {
 			Name::Component const &component = name.at(i);
 			auto departure =
@@ -458,12 +456,8 @@ void AHClient::onArriveInterest(const Interest &request, const bool send_back) {
 				Name::Component comp;
 				// getIP
 				comp = name.at(i + 1);
-				memcpy(ip.data(), comp.value(), IP_BYTES);
-				// NOLINTNEXTLINE(cppcoreguidelines-pro-type-cstyle-cast)
-				char *t_ip = inet_ntoa(*(in_addr *)(ip.data()));
-				unsigned long ip_len = strlen(t_ip) + 1;
-				memcpy(ip_str.data(), t_ip,
-				       ip_len >= ip_str_len ? ip_str_len - 1 : ip_len);
+				memcpy(&ip, comp.value(), sizeof(ip)); // IP_BYTES);
+				std::string ip_str(inet_ntoa(ip));
 				// getPort
 				comp = name.at(i + 2);
 				memcpy(&port, comp.value(), sizeof(port));
@@ -521,7 +515,8 @@ void AHClient::onArriveInterest(const Interest &request, const bool send_back) {
 				} else {
 					if (!hasEntry(prefix)) {
 						DBEntry &entry = newItem();
-						entry.ip.swap(ip);
+						// entry.ip.swap(ip);
+						entry.ip = ip;
 						entry.port = port;
 						entry.prefix = prefix;
 						addFaceAndPrefix(ss_str, prefix, entry, send_back);
@@ -915,6 +910,13 @@ void AHClient::setIP() {
 	if (!found) {
 		cout << "AH Client: Could not find host ip." << endl;
 		exit(1);
+	}
+}
+
+void AHClient::visitPiers(const VisitPiersCallback &callback) {
+	for (auto it = m_db.begin(); it != m_db.end();) {
+		callback(*it);
+		++it;
 	}
 }
 
