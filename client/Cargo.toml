@@ -1,0 +1,13 @@
+[package]
+name = "ahndn_client"
+version = "0.1.0"
+authors = ["Steven Stanfield <steve@eucleo.com>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+redox_liner = { git = "https://github.com/sstanfield/liner.git" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+clap = "2"

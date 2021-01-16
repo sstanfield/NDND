@@ -4,3 +4,5 @@
 *.dSYM
 build/
 .idea/
+/target
+Cargo.lock
