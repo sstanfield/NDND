@@ -68,7 +68,7 @@ void StatusInfo::ribResults(const StatusCallback &callback,
 	}
 
 	stringstream statusstr;
-	statusstr << "\"faces\":[" << endl;
+	statusstr << "[" << endl;
 	int fi = 0;
 	for (const auto &face_status : m_faces) {
 		if (face_status.getFaceScope() !=
@@ -81,47 +81,56 @@ void StatusInfo::ribResults(const StatusCallback &callback,
 			statusstr << endl;
 		}
 		fi++;
-		statusstr
-		    << "  {" << endl
-		    <<
-		    //"    \"id\":"<< face_status.getFaceId() << endl <<
-		    "    \"remoteUri\":" << face_status.getRemoteUri() << "," << endl
-		    << "    \"localUri\":" << face_status.getLocalUri() << "," << endl
-		    << "    \"linkType\":" << face_status.getLinkType() << "," << endl
-		    << "    \"faceScope\":" << face_status.getFaceScope() << "," << endl
-		    << "    \"facePersistency\":" << face_status.getFacePersistency()
-		    << "," << endl
-		    << "    \"flags\":" << face_status.getFlags() << "," << endl
-		    << "    \"inInterests\":" << face_status.getNInInterests() << ","
-		    << endl
-		    << "    \"outInterests\":" << face_status.getNOutInterests() << ","
-		    << endl
-		    << "    \"inBytes\":" << face_status.getNInBytes() << "," << endl
-		    << "    \"outBytes\":" << face_status.getNOutBytes() << "," << endl
-		    << "    \"inData\":" << face_status.getNInData() << "," << endl
-		    << "    \"outData\":" << face_status.getNOutData() << "," << endl
-		    << "    \"inNacks\":" << face_status.getNInNacks() << "," << endl
-		    << "    \"outNacks\":" << face_status.getNOutNacks() << "," << endl;
+		statusstr << "  {" << endl
+		          << "    \"id\":" << face_status.getFaceId() << "," << endl
+		          << R"(    "remote_uri":")" << face_status.getRemoteUri()
+		          << "\"," << endl
+		          << R"(    "local_uri":")" << face_status.getLocalUri()
+		          << "\"," << endl
+		          << R"(    "link_type":")" << face_status.getLinkType()
+		          << "\"," << endl
+		          << R"(    "face_scope":")" << face_status.getFaceScope()
+		          << "\"," << endl
+		          << R"(    "face_persistency":")"
+		          << face_status.getFacePersistency() << R"(",)" << endl
+		          << R"(    "flags":)" << face_status.getFlags() << "," << endl
+		          << R"(    "in_interests":)" << face_status.getNInInterests()
+		          << "," << endl
+		          << R"(    "out_interests":)" << face_status.getNOutInterests()
+		          << "," << endl
+		          << R"(    "in_bytes":)" << face_status.getNInBytes() << ","
+		          << endl
+		          << R"(    "out_bytes":)" << face_status.getNOutBytes() << ","
+		          << endl
+		          << R"(    "in_data":)" << face_status.getNInData() << ","
+		          << endl
+		          << R"(    "out_data":)" << face_status.getNOutData() << ","
+		          << endl
+		          << R"(    "in_nacks":)" << face_status.getNInNacks() << ","
+		          << endl
+		          << R"(    "out_nacks":)" << face_status.getNOutNacks() << ","
+		          << endl;
 		if (face_status.hasMtu()) {
-			statusstr << "    \"mtu\":" << face_status.getMtu() << "," << endl;
+			statusstr << R"(    "mtu":)" << face_status.getMtu() << "," << endl;
 		}
 		if (face_status.hasDefaultCongestionThreshold()) {
-			statusstr << "    \"defaultCongestionThreshold\":"
+			statusstr << R"(    "default_congestion_threshold":)"
 			          << face_status.getDefaultCongestionThreshold() << ","
 			          << endl;
 		}
 		if (face_status.hasBaseCongestionMarkingInterval()) {
-			statusstr << "    \"defaultBaseCongestionMarkingInterval\":"
-			          << face_status.getBaseCongestionMarkingInterval() << ","
-			          << endl;
+			statusstr << R"(    "default_base_congestion_marking_interval_ns":)"
+			          << face_status.getBaseCongestionMarkingInterval().count()
+			          << "," << endl;
 		}
 		if (face_status.hasExpirationPeriod()) {
-			statusstr << "    \"expirationPeriod\":"
-			          << face_status.getExpirationPeriod() << "," << endl;
+			statusstr << R"(    "expiration_period_ms":)"
+			          << face_status.getExpirationPeriod().count() << ","
+			          << endl;
 		}
 		const auto rib_list = m_ribs.find(face_status.getFaceId());
 		if (rib_list != m_ribs.end()) {
-			statusstr << "    \"routes\":[";
+			statusstr << R"(    "routes":[)";
 			int ri = 0;
 			for (const auto &rib : rib_list->second) {
 				if (ri > 0) {
@@ -130,26 +139,28 @@ void StatusInfo::ribResults(const StatusCallback &callback,
 					statusstr << endl;
 				}
 				ri++;
-				statusstr << "      {\"name\":" << rib.getName() << ", ";
+				statusstr << R"(      {"name":")" << rib.getName() << R"(",)";
 				for (const auto &route : rib.getRoutes()) {
 					if (route.getFaceId() == face_status.getFaceId()) {
-						statusstr << "\"origin\":" << route.getOrigin() << ",";
-						statusstr << "\"cost\":" << route.getCost() << ",";
+						statusstr << R"("origin":")" << route.getOrigin()
+						          << R"(",)";
+						statusstr << R"("cost":)" << route.getCost() << ",";
 						if (route.hasExpirationPeriod()) {
-							statusstr << "\"expirationPeriod\":"
-							          << route.getExpirationPeriod() << ",";
+							statusstr << R"("expiration_period_ms":)"
+							          << route.getExpirationPeriod().count()
+							          << ",";
 						}
-						statusstr << "\"flags\":" << route.getFlags() << "}";
+						statusstr << R"("flags":)" << route.getFlags() << "}";
 					}
 				}
 			}
 			statusstr << endl << "    ]" << endl;
 		} else {
-			statusstr << "    \"routes\":[]" << endl;
+			statusstr << R"(    "routes":[])" << endl;
 		}
 		statusstr << "  }";
 	}
-	statusstr << endl << "]" << endl;
+	statusstr << endl << "]"; // << endl;
 	callback(statusstr.str());
 }
 } // namespace ahnd

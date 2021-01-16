@@ -41,6 +41,8 @@ class AHClient {
 	               const StatusErrorCallback &errorCallback) {
 		m_statusinfo->getStatus(statusCallback, errorCallback);
 	}
+	void getPierStatus(long id, const StatusCallback &statusCallback,
+	                   const StatusErrorCallback &errorCallback);
 	void visitPiers(const VisitPiersCallback &callback);
 
   private:
@@ -52,6 +54,7 @@ class AHClient {
 	void registerClientPrefix();
 	void registerKeepAlivePrefix();
 	void registerPingPrefix();
+	void registerStatusPrefix();
 	void registerArrivePrefix();
 	void sendArrivalInterestInternal();
 	void sendArrivalInterest();

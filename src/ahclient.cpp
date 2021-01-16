@@ -299,13 +299,52 @@ void AHClient::registerPingPrefix() {
 		    std::cout << "AH Client: Registered client ping prefix "
 		              << name.toUri() << std::endl;
 		    // Now register broadcast prefix.
-		    registerArrivePrefix();
+		    registerStatusPrefix();
 	    },
 	    [this](const Name &name, const std::string &error) {
 		    std::cout << "AH Client: Failed to register client ping prefix "
 		              << name.toUri() << " reason: " << error << std::endl;
 		    m_scheduler->schedule(time::seconds(3),
 		                          [this] { registerPingPrefix(); });
+	    });
+}
+
+void AHClient::registerStatusPrefix() {
+	Name name(m_prefix);
+	name.append("nd-status");
+	cout << "AH Client: Registering KeepAlive Prefix: " << name << endl;
+	m_face.setInterestFilter(
+	    InterestFilter(name),
+	    [this](const InterestFilter &filter, const Interest &request) {
+		    cout << "AH Client: Received status request, responding." << endl;
+		    m_statusinfo->getStatus(
+		        [this, request](const string &json) {
+			        auto data = make_shared<Data>(request.getName());
+			        auto b = make_shared<Buffer>(json.begin(), json.end());
+			        auto payload = Block(tlv::Content, std::move(b));
+			        data->setContent(payload);
+			        m_keyChain.sign(
+			            *data, security::SigningInfo(
+			                       security::SigningInfo::SIGNER_TYPE_SHA256));
+			        data->setFreshnessPeriod(time::milliseconds(FRESHNESS_MS));
+			        m_face.put(*data);
+		        },
+		        [](const string &reason) {
+			        std::cout
+			            << "AH Client: Failed to get client status reason: "
+			            << reason << std::endl;
+		        });
+	    },
+	    [this](const Name &name) {
+		    std::cout << "AH Client: Registered client status prefix "
+		              << name.toUri() << std::endl;
+		    registerArrivePrefix();
+	    },
+	    [this](const Name &name, const std::string &error) {
+		    std::cout << "AH Client: Failed to register client status prefix "
+		              << name.toUri() << " reason: " << error << std::endl;
+		    m_scheduler->schedule(time::seconds(3),
+		                          [this] { registerStatusPrefix(); });
 	    });
 }
 
@@ -910,6 +949,60 @@ void AHClient::setIP() {
 	if (!found) {
 		cout << "AH Client: Could not find host ip." << endl;
 		exit(1);
+	}
+}
+
+void AHClient::getPierStatus(const long id,
+                             const StatusCallback &statusCallback,
+                             const StatusErrorCallback &errorCallback) {
+	for (auto it = m_db.begin(); it != m_db.end();) {
+		if (it->id == id) {
+			const DBEntry item = *it;
+			if (item.prefix.empty()) {
+				errorCallback("Peir has no prefix!");
+				break;
+			}
+			Name name(item.prefix);
+			name.append("nd-status");
+			name.appendTimestamp();
+			Interest interest(name);
+			interest.setInterestLifetime(INTEREST_LIFETIME);
+			interest.setMustBeFresh(true);
+			interest.setNonce(4);
+			interest.setCanBePrefix(false);
+
+			cout << "AH Client: Sending status request to "
+			     << interest.getName() << endl;
+			m_face.expressInterest(
+			    interest,
+			    [statusCallback, errorCallback](const Interest &interest,
+			                                    const Data &data) {
+				    cout << "AH Client: Got status response from "
+				         << interest.getName() << endl;
+				    if (data.hasContent()) {
+					    std::string json(data.getContent().value_begin(),
+					                     data.getContent().value_end());
+					    statusCallback(json);
+				    } else {
+					    errorCallback("Pier sent no data.");
+				    }
+			    },
+			    [errorCallback](const Interest &interest,
+			                    const lp::Nack &nack) {
+				    std::cout << "AH Client: received status request Nack with "
+				                 "reason "
+				              << nack.getReason() << " for interest "
+				              << interest << std::endl;
+				    errorCallback("Got NACK from pier.");
+			    },
+			    [errorCallback](const Interest &interest) {
+				    std::cout << "AH Client: Status request timeout "
+				              << interest << std::endl;
+				    errorCallback("Got Timeout from pier.");
+			    });
+			break;
+		}
+		++it;
 	}
 }
 

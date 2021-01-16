@@ -92,6 +92,9 @@ class Program {
 			action.sa_flags = 0;
 			sigaction(SIGINT, &action, nullptr);
 			sigaction(SIGTERM, &action, nullptr);
+			// Ignore sigpipe so the writes will return an error...
+			// NOLINTNEXTLINE(cppcoreguidelines-pro-type-cstyle-cast)
+			signal(SIGPIPE, SIG_IGN);
 		}
 
 		m_client->registerPrefixes();
@@ -140,24 +143,70 @@ class Program {
 					    FD_ISSET(client_fds.at(i), &rfds)) {
 						int cl = client_fds.at(i);
 						int rc = read(cl, buf.data(), CLIENT_BUF_LEN);
-						string command(buf.data());
+						string line(buf.data());
+						std::istringstream iss(line);
+						std::vector<std::string> results(
+						    std::istream_iterator<std::string>{iss},
+						    std::istream_iterator<std::string>());
+						string command = results[0];
 						command.erase(command.find_last_not_of(" \n\r\t") + 1);
 						if (rc > 0) {
 							if (command == "status") {
 								m_client->getStatus(
 								    [cl](const string &json) {
-									    // auto rc =
-									    write(cl, json.c_str(),
-									          json.length() + 1);
-									    // close(cl);
-									    // cout << "CALLBACK: (" << rc << ") "
-									    // << json
-									    //     << endl;
+									    if (write(cl, json.c_str(),
+									              json.length() + 1) == -1) {
+										    // XXX Close fd
+										    perror("AH Client: ERROR writing "
+										           "to client");
+									    }
 								    },
 								    [cl](const string &error) {
 									    string message = "ERROR getting status";
-									    write(cl, message.c_str(),
-									          message.length() + 1);
+									    if (write(cl, message.c_str(),
+									              message.length() + 1) == -1) {
+										    // XXX Close fd
+										    perror("AH Client: ERROR writing "
+										           "to client");
+									    }
+									    cout << "AH Client: Got error checking "
+									            "status, "
+									         << error << endl;
+								    });
+							} else if (command == "pier-status") {
+								if (results.size() != 2) {
+									cout << "AH Client: pier-status requires a "
+									        "pier id"
+									     << endl;
+									string message =
+									    "ERROR pier-status requires pier id";
+									if (write(cl, message.c_str(),
+									          message.length() + 1) == -1) {
+										// XXX Close fd
+										perror("AH Client: ERROR writing "
+										       "to client");
+									}
+									continue;
+								}
+								int pier = std::stoi(results[1], nullptr);
+								m_client->getPierStatus(
+								    pier,
+								    [cl](const string &json) {
+									    if (write(cl, json.c_str(),
+									              json.length() + 1) == -1) {
+										    // XXX Close fd
+										    perror("AH Client: ERROR writing "
+										           "to client");
+									    }
+								    },
+								    [cl](const string &error) {
+									    string message = "ERROR getting status";
+									    if (write(cl, message.c_str(),
+									              message.length() + 1) == -1) {
+										    // XXX Close fd
+										    perror("AH Client: ERROR writing "
+										           "to client");
+									    }
 									    cout << "AH Client: Got error checking "
 									            "status, "
 									         << error << endl;
@@ -165,44 +214,55 @@ class Program {
 							} else if (command == "piers") {
 								stringstream pierstr;
 								bool first = true;
-								pierstr << "\"piers\":[";
-								m_client->visitPiers(
-								    [&first, &pierstr](const DBEntry &pier) {
-									    if (first) {
-										    pierstr << endl << "    ";
-										    first = false;
-									    } else {
-										    pierstr << "," << endl << "    ";
-									    }
-									    std::string ip_str(inet_ntoa(pier.ip));
-									    //*(in_addr *)(pier.ip.data())));
-									    pierstr << "{\"faceId\":" << pier.faceId
-									            << R"(,"prefix":")"
-									            << pier.prefix << R"(","ip:":")"
-									            << ip_str << R"(","port":)"
-									            << pier.port << "}";
-								    });
+								pierstr << "[";
+								m_client->visitPiers([&first, &pierstr](
+								                         const DBEntry &pier) {
+									if (first) {
+										pierstr << endl << "    ";
+										first = false;
+									} else {
+										pierstr << "," << endl << "    ";
+									}
+									std::string ip_str(inet_ntoa(pier.ip));
+									pierstr << R"({"id":)" << pier.id
+									        << R"(,"faceId":)" << pier.faceId
+									        << R"(,"prefix":")" << pier.prefix
+									        << R"(","ip":")" << ip_str
+									        << R"(","port":)" << pier.port
+									        << "}";
+								});
 								if (!first) {
 									pierstr << endl;
 								}
 								pierstr << "]" << endl;
-								write(cl, pierstr.str().c_str(),
-								      pierstr.str().length() + 1);
+								if (write(cl, pierstr.str().c_str(),
+								          pierstr.str().length() + 1) == -1) {
+									perror(
+									    "AH Client: ERROR writing to client");
+									client_fds.at(i) = -1;
+									close(cl);
+								}
 							} else if (command == "exit") {
 								cout << "AH Client: closed client at client "
 								        "request"
 								     << endl;
 								string message = "GOODBYE!";
-								write(cl, message.c_str(),
-								      message.length() + 1);
+								if (write(cl, message.c_str(),
+								          message.length() + 1) == -1) {
+									perror(
+									    "AH Client: ERROR writing to client");
+								}
 								client_fds.at(i) = -1;
 								close(cl);
 							} else {
-								string message = "Invalid command: ";
-								write(cl, message.c_str(),
-								      message.length() + 1);
-								write(cl, command.c_str(),
-								      command.length() + 1);
+								string message = "Invalid command";
+								if (write(cl, message.c_str(),
+								          message.length() + 1) == -1) {
+									perror(
+									    "AH Client: ERROR writing to client");
+									client_fds.at(i) = -1;
+									close(cl);
+								}
 								cout << "AH Client: unknown command " << command
 								     << endl;
 							}
