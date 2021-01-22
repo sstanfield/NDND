@@ -143,14 +143,18 @@ class Program {
 					    FD_ISSET(client_fds.at(i), &rfds)) {
 						int cl = client_fds.at(i);
 						int rc = read(cl, buf.data(), CLIENT_BUF_LEN);
-						string line(buf.data());
-						std::istringstream iss(line);
-						std::vector<std::string> results(
-						    std::istream_iterator<std::string>{iss},
-						    std::istream_iterator<std::string>());
-						string command = results[0];
-						command.erase(command.find_last_not_of(" \n\r\t") + 1);
 						if (rc > 0) {
+							string line(buf.data());
+							std::istringstream iss(line);
+							std::vector<std::string> results(
+							    std::istream_iterator<std::string>{iss},
+							    std::istream_iterator<std::string>());
+							string command = results[0];
+							size_t elen =
+							    command.find_last_not_of(" \n\r\t") + 1;
+							if (command.length() > elen) {
+								command.erase(elen);
+							}
 							if (command == "status") {
 								m_client->getStatus(
 								    [cl](const string &json) {
