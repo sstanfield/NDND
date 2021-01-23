@@ -259,7 +259,7 @@ class Program {
 								client_fds.at(i) = -1;
 								close(cl);
 							} else {
-								string message = "Invalid command";
+								string message = "ERROR: Invalid command";
 								if (write(cl, message.c_str(),
 								          message.length() + 1) == -1) {
 									perror(
