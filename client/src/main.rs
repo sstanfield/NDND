@@ -30,9 +30,14 @@ fn print_json(input: &str, json: &str) -> std::io::Result<()> {
         let faces: Vec<Face> = serde_json::from_str(&json)?;
         for face in faces.iter() {
             println!(
-                "{}\t{}\t{}\t{}/{}",
+                "{}\t{}\t{}\t{} to {}",
                 face.id, face.link_type, face.face_scope, face.local_uri, face.remote_uri
             );
+            print!("\tRoutes: ");
+            for route in &face.routes {
+                print!("{}, ", route.name);
+            }
+            println!();
         }
     } else if input == "piers" {
         let piers: Vec<Pier> = serde_json::from_str(&json)?;
@@ -120,6 +125,13 @@ fn main() -> std::io::Result<()> {
                 .multiple(true)
                 .number_of_values(2),
         )
+        .arg(
+            Arg::with_name("raw")
+                .long("raw")
+                .help("Sends a raw string to the agent and prints the resulting error or json.")
+                .takes_value(true)
+                .number_of_values(1),
+        )
         .get_matches();
 
     let socket_name = matches.value_of("socket").unwrap_or("/tmp/ah");
@@ -130,12 +142,14 @@ fn main() -> std::io::Result<()> {
     if matches.is_present("piers") {
         writeln!(stream, "piers")?;
         let json = get_json(&mut stream)?;
+        println!("PIERS:");
         print_json("piers", &json)?;
         repl = false;
     }
     if matches.is_present("status") {
         writeln!(stream, "status")?;
         let json = get_json(&mut stream)?;
+        println!("STATUS:");
         print_json("status", &json)?;
         repl = false;
     }
@@ -152,6 +166,7 @@ fn main() -> std::io::Result<()> {
             })?;
         writeln!(stream, "pier-status {}", pier)?;
         let json = get_json(&mut stream)?;
+        println!("PIER-STATUS pier {}:", pier);
         print_json("pier-status", &json)?;
         repl = false;
     }
@@ -168,6 +183,7 @@ fn main() -> std::io::Result<()> {
             })?;
         writeln!(stream, "status")?;
         let json = get_json(&mut stream)?;
+        println!("STATS face {}:", face);
         print_json(&format!("stats {}", face), &json)?;
         repl = false;
     }
@@ -186,8 +202,18 @@ fn main() -> std::io::Result<()> {
                 )
             })?;
             writeln!(stream, "pier-status {}", pier)?;
+            println!("PIER-STATS pier {} face {}:", pier, face);
             let json = get_json(&mut stream)?;
             print_json(&format!("pier-stats {} {}", pier, face), &json)?;
+        }
+        repl = false;
+    }
+    if matches.is_present("raw") {
+        if let Some(command) = matches.value_of("raw") {
+            writeln!(stream, "{}", command)?;
+            println!("{}:", command);
+            let json = get_json(&mut stream)?;
+            println!("{}", json);
         }
         repl = false;
     }

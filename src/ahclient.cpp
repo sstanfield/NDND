@@ -1008,7 +1008,9 @@ void AHClient::getPierStatus(const long id,
 
 void AHClient::visitPiers(const VisitPiersCallback &callback) {
 	for (auto it = m_db.begin(); it != m_db.end();) {
-		callback(*it);
+		if (!it->prefix.equals("")) {
+			callback(*it);
+		}
 		++it;
 	}
 }
