@@ -7,6 +7,7 @@ use clap::{App, Arg};
 //use liner::{keymap, Buffer, ColorClosure, Context, Prompt};
 use liner::{Context, Prompt};
 
+use ahndn_client::parse::*;
 use ahndn_client::types::*;
 
 fn get_json(stream: &mut UnixStream) -> std::io::Result<String> {
@@ -23,10 +24,8 @@ fn get_json(stream: &mut UnixStream) -> std::io::Result<String> {
     Ok(json)
 }
 
-fn print_json(input: &str, json: &str) -> std::io::Result<()> {
-    if json.starts_with("ERROR") {
-        println!("Agent error: {}", json);
-    } else if input == "status" || input.starts_with("pier-status") {
+fn print_json(input: &Input, json: &str) -> std::io::Result<()> {
+    fn print_status(json: &str) -> std::io::Result<()> {
         let faces: Vec<Face> = serde_json::from_str(&json)?;
         for face in faces.iter() {
             println!(
@@ -39,45 +38,59 @@ fn print_json(input: &str, json: &str) -> std::io::Result<()> {
             }
             println!();
         }
-    } else if input == "piers" {
-        let piers: Vec<Pier> = serde_json::from_str(&json)?;
-        for pier in piers.iter() {
-            println!(
-                "{}: {} ({}) {}:{}",
-                pier.id, pier.prefix, pier.face_id, pier.ip, pier.port
-            );
+        Ok(())
+    }
+    fn print_stats(face_id: u64, json: &str) -> std::io::Result<()> {
+        let faces: Vec<Face> = serde_json::from_str(&json)?;
+        for face in faces.iter() {
+            if face.id == face_id {
+                println!(
+                    "{}\t{}\t{}\t{}/{}",
+                    face.id, face.link_type, face.face_scope, face.local_uri, face.remote_uri
+                );
+                println!("    interests {}/{}", face.in_interests, face.out_interests);
+                println!("    bytes     {}/{}", face.in_bytes, face.out_bytes);
+                println!("    data      {}/{}", face.in_data, face.out_data);
+                println!("    nacks     {}/{}", face.in_nacks, face.out_nacks);
+            }
         }
-    } else if input.starts_with("stats") || input.starts_with("pier-stats") {
-        let mut parts = input.split_whitespace();
-        parts.next();
-        if input.starts_with("pier-stats") {
-            parts.next();
-        }
-        if let Some(face_id_str) = parts.next() {
-            if let Ok(face_id) = u64::from_str_radix(face_id_str, 10) {
-                let faces: Vec<Face> = serde_json::from_str(&json)?;
-                for face in faces.iter() {
-                    if face.id == face_id {
-                        println!(
-                            "{}\t{}\t{}\t{}/{}",
-                            face.id,
-                            face.link_type,
-                            face.face_scope,
-                            face.local_uri,
-                            face.remote_uri
-                        );
-                        println!("    interests {}/{}", face.in_interests, face.out_interests);
-                        println!("    bytes     {}/{}", face.in_bytes, face.out_bytes);
-                        println!("    data      {}/{}", face.in_data, face.out_data);
-                        println!("    nacks     {}/{}", face.in_nacks, face.out_nacks);
-                    }
+        Ok(())
+    }
+
+    if json.starts_with("ERROR") {
+        eprintln!("Agent error: {}", json);
+    } else {
+        match input.command {
+            Command::Status => {
+                print_status(json)?;
+            }
+            Command::PierStatus => {
+                print_status(json)?;
+            }
+            Command::Stats => {
+                if let Some(face_id) = input.face {
+                    print_stats(face_id, json)?
+                } else {
+                    eprintln!("Error, stats requires a face id");
                 }
             }
-        } else {
-            eprintln!("Error, stats takes one number, the face id");
+            Command::PierStats => {
+                if let Some(face_id) = input.face {
+                    print_stats(face_id, json)?
+                } else {
+                    eprintln!("Error, pier-stats requires a face id (second argument)");
+                }
+            }
+            Command::Piers => {
+                let piers: Vec<Pier> = serde_json::from_str(&json)?;
+                for pier in piers.iter() {
+                    println!(
+                        "{}: {} ({}) {}:{}",
+                        pier.id, pier.prefix, pier.face_id, pier.ip, pier.port
+                    );
+                }
+            }
         }
-    } else {
-        println!("{}", json);
     }
     Ok(())
 }
@@ -143,14 +156,28 @@ fn main() -> std::io::Result<()> {
         writeln!(stream, "piers")?;
         let json = get_json(&mut stream)?;
         println!("PIERS:");
-        print_json("piers", &json)?;
+        print_json(
+            &Input {
+                command: Command::Piers,
+                pier: None,
+                face: None,
+            },
+            &json,
+        )?;
         repl = false;
     }
     if matches.is_present("status") {
         writeln!(stream, "status")?;
         let json = get_json(&mut stream)?;
         println!("STATUS:");
-        print_json("status", &json)?;
+        print_json(
+            &Input {
+                command: Command::Status,
+                pier: None,
+                face: None,
+            },
+            &json,
+        )?;
         repl = false;
     }
     if matches.is_present("pier-status") {
@@ -167,7 +194,14 @@ fn main() -> std::io::Result<()> {
         writeln!(stream, "pier-status {}", pier)?;
         let json = get_json(&mut stream)?;
         println!("PIER-STATUS pier {}:", pier);
-        print_json("pier-status", &json)?;
+        print_json(
+            &Input {
+                command: Command::Status,
+                pier: None,
+                face: None,
+            },
+            &json,
+        )?;
         repl = false;
     }
     if matches.is_present("stats") {
@@ -184,7 +218,14 @@ fn main() -> std::io::Result<()> {
         writeln!(stream, "status")?;
         let json = get_json(&mut stream)?;
         println!("STATS face {}:", face);
-        print_json(&format!("stats {}", face), &json)?;
+        print_json(
+            &Input {
+                command: Command::Stats,
+                pier: None,
+                face: Some(face),
+            },
+            &json,
+        )?;
         repl = false;
     }
     if matches.is_present("pier-stats") {
@@ -204,7 +245,14 @@ fn main() -> std::io::Result<()> {
             writeln!(stream, "pier-status {}", pier)?;
             println!("PIER-STATS pier {} face {}:", pier, face);
             let json = get_json(&mut stream)?;
-            print_json(&format!("pier-stats {} {}", pier, face), &json)?;
+            print_json(
+                &Input {
+                    command: Command::Stats,
+                    pier: Some(pier),
+                    face: Some(face),
+                },
+                &json,
+            )?;
         }
         repl = false;
     }
@@ -228,19 +276,26 @@ fn main() -> std::io::Result<()> {
                     eprintln!("Warning: failed to save history: {}", err);
                 }
                 let input = input.trim();
-                if input.starts_with("stats") {
-                    writeln!(stream, "status")?;
-                } else if input.starts_with("pier-stats") {
-                    let mut parts = input.split_whitespace();
-                    parts.next();
-                    if let Some(pier) = parts.next() {
-                        writeln!(stream, "pier-status {}", pier)?;
+                let parsed = parse_input(input);
+                // XXX Use rest to see if anything is leftover and that's an error...
+                if let Ok((_rest, inval)) = parsed {
+                    match inval.command {
+                        Command::Status => writeln!(stream, "status")?,
+                        Command::Stats => writeln!(stream, "status")?,
+                        // The next two unwraps should be ok because the parser would error out if pier was None.
+                        Command::PierStatus => {
+                            writeln!(stream, "pier-status {}", inval.pier.unwrap())?
+                        }
+                        Command::PierStats => {
+                            writeln!(stream, "pier-status {}", inval.pier.unwrap())?
+                        }
+                        Command::Piers => writeln!(stream, "piers")?,
                     }
+                    let json = get_json(&mut stream)?;
+                    print_json(&inval, &json)?;
                 } else {
-                    writeln!(stream, "{}", input)?;
+                    eprintln!("Parse Error on input: {}", input);
                 }
-                let json = get_json(&mut stream)?;
-                print_json(input, &json)?;
             }
             Err(err) => match err.kind() {
                 ErrorKind::UnexpectedEof => {
