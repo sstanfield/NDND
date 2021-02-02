@@ -24,39 +24,58 @@ fn get_json(stream: &mut UnixStream) -> std::io::Result<String> {
     Ok(json)
 }
 
-fn print_json(input: &Input, json: &str) -> std::io::Result<()> {
-    fn print_status(json: &str) -> std::io::Result<()> {
-        let faces: Vec<Face> = serde_json::from_str(&json)?;
-        for face in faces.iter() {
-            println!(
-                "{}\t{}\t{}\t{} to {}",
-                face.id, face.link_type, face.face_scope, face.local_uri, face.remote_uri
-            );
-            print!("\tRoutes: ");
-            for route in &face.routes {
-                print!("{}, ", route.name);
-            }
-            println!();
-        }
-        Ok(())
+fn print_face(face: &Face) {
+    println!(
+        "{}\t{}\t{}\t{} to {}",
+        face.id, face.link_type, face.face_scope, face.local_uri, face.remote_uri
+    );
+    print!("\tRoutes: ");
+    for route in &face.routes {
+        print!("{}, ", route.name);
     }
-    fn print_stats(face_id: u64, json: &str) -> std::io::Result<()> {
-        let faces: Vec<Face> = serde_json::from_str(&json)?;
-        for face in faces.iter() {
-            if face.id == face_id {
-                println!(
-                    "{}\t{}\t{}\t{}/{}",
-                    face.id, face.link_type, face.face_scope, face.local_uri, face.remote_uri
-                );
+    println!();
+}
+
+fn print_status(json: &str) -> std::io::Result<()> {
+    let faces: Vec<Face> = serde_json::from_str(&json)?;
+    for face in faces.iter() {
+        print_face(face);
+    }
+    Ok(())
+}
+
+fn print_stats(face_id: u64, json: &str) -> std::io::Result<()> {
+    let faces: Vec<Face> = serde_json::from_str(&json)?;
+    for face in faces.iter() {
+        if face.id == face_id {
+            print_face(face);
+            println!("    interests {}/{}", face.in_interests, face.out_interests);
+            println!("    bytes     {}/{}", face.in_bytes, face.out_bytes);
+            println!("    data      {}/{}", face.in_data, face.out_data);
+            println!("    nacks     {}/{}", face.in_nacks, face.out_nacks);
+        }
+    }
+    Ok(())
+}
+
+fn print_stats_by_route(route_name: &str, json: &str) -> std::io::Result<()> {
+    let faces: Vec<Face> = serde_json::from_str(&json)?;
+    for face in faces.iter() {
+        for route in &face.routes {
+            if route.name == route_name {
+                print_face(face);
                 println!("    interests {}/{}", face.in_interests, face.out_interests);
                 println!("    bytes     {}/{}", face.in_bytes, face.out_bytes);
                 println!("    data      {}/{}", face.in_data, face.out_data);
                 println!("    nacks     {}/{}", face.in_nacks, face.out_nacks);
+                break;
             }
         }
-        Ok(())
     }
+    Ok(())
+}
 
+fn print_json(input: &Input, json: &str) -> std::io::Result<()> {
     if json.starts_with("ERROR") {
         eprintln!("Agent error: {}", json);
     } else {
@@ -88,6 +107,11 @@ fn print_json(input: &Input, json: &str) -> std::io::Result<()> {
                         "{}: {} ({}) {}:{}",
                         pier.id, pier.prefix, pier.face_id, pier.ip, pier.port
                     );
+                }
+            }
+            Command::QueryRoute => {
+                if let Some(route) = &input.route {
+                    print_stats_by_route(route, json)?;
                 }
             }
         }
@@ -161,6 +185,7 @@ fn main() -> std::io::Result<()> {
                 command: Command::Piers,
                 pier: None,
                 face: None,
+                route: None,
             },
             &json,
         )?;
@@ -175,6 +200,7 @@ fn main() -> std::io::Result<()> {
                 command: Command::Status,
                 pier: None,
                 face: None,
+                route: None,
             },
             &json,
         )?;
@@ -199,6 +225,7 @@ fn main() -> std::io::Result<()> {
                 command: Command::Status,
                 pier: None,
                 face: None,
+                route: None,
             },
             &json,
         )?;
@@ -223,6 +250,7 @@ fn main() -> std::io::Result<()> {
                 command: Command::Stats,
                 pier: None,
                 face: Some(face),
+                route: None,
             },
             &json,
         )?;
@@ -250,6 +278,7 @@ fn main() -> std::io::Result<()> {
                     command: Command::Stats,
                     pier: Some(pier),
                     face: Some(face),
+                    route: None,
                 },
                 &json,
             )?;
@@ -277,24 +306,48 @@ fn main() -> std::io::Result<()> {
                 }
                 let input = input.trim();
                 let parsed = parse_input(input);
-                // XXX Use rest to see if anything is leftover and that's an error...
-                if let Ok((_rest, inval)) = parsed {
-                    match inval.command {
-                        Command::Status => writeln!(stream, "status")?,
-                        Command::Stats => writeln!(stream, "status")?,
-                        // The next two unwraps should be ok because the parser would error out if pier was None.
-                        Command::PierStatus => {
-                            writeln!(stream, "pier-status {}", inval.pier.unwrap())?
+                match parsed {
+                    Ok((rest, inval)) => {
+                        if !rest.is_empty() {
+                            // Leftover input means the command was bad.
+                            eprintln!("Parse Error on input: {}, unexpected {}", input, rest);
+                        } else {
+                            let mut get_print = true;
+                            match inval.command {
+                                Command::Status => writeln!(stream, "status")?,
+                                Command::Stats => writeln!(stream, "status")?,
+                                // The next two unwraps should be ok because the parser would error out if pier was None.
+                                Command::PierStatus => {
+                                    writeln!(stream, "pier-status {}", inval.pier.unwrap())?
+                                }
+                                Command::PierStats => {
+                                    writeln!(stream, "pier-status {}", inval.pier.unwrap())?
+                                }
+                                Command::Piers => writeln!(stream, "piers")?,
+                                Command::QueryRoute => {
+                                    get_print = false;
+                                    writeln!(stream, "piers")?;
+                                    let json = get_json(&mut stream)?;
+                                    let piers: Vec<Pier> = serde_json::from_str(&json)?;
+                                    for pier in piers.iter() {
+                                        println!("pier: {}: {}@{}", pier.id, pier.prefix, pier.ip);
+                                        writeln!(stream, "pier-status {}", pier.id)?;
+                                        let json = get_json(&mut stream)?;
+                                        print_json(&inval, &json)?;
+                                    }
+                                    println!("Local Faces:");
+                                    writeln!(stream, "status")?;
+                                    let json = get_json(&mut stream)?;
+                                    print_json(&inval, &json)?;
+                                }
+                            }
+                            if get_print {
+                                let json = get_json(&mut stream)?;
+                                print_json(&inval, &json)?;
+                            }
                         }
-                        Command::PierStats => {
-                            writeln!(stream, "pier-status {}", inval.pier.unwrap())?
-                        }
-                        Command::Piers => writeln!(stream, "piers")?,
                     }
-                    let json = get_json(&mut stream)?;
-                    print_json(&inval, &json)?;
-                } else {
-                    eprintln!("Parse Error on input: {}", input);
+                    Err(err) => eprintln!("Parse Error on input: {}, {}", input, err),
                 }
             }
             Err(err) => match err.kind() {

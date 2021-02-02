@@ -1,6 +1,8 @@
 extern crate nom;
 
 use self::nom::character::complete::digit1;
+use self::nom::error::ErrorKind;
+use self::nom::{AsChar, InputTakeAtPosition};
 use nom::{
     branch::alt,
     bytes::complete::tag_no_case,
@@ -15,6 +17,7 @@ pub enum Command {
     Stats,
     PierStats,
     Piers,
+    QueryRoute,
 }
 
 impl From<&str> for Command {
@@ -25,6 +28,7 @@ impl From<&str> for Command {
             "stats" => Command::Stats,
             "pier-stats" => Command::PierStats,
             "piers" => Command::Piers,
+            "route" => Command::QueryRoute,
             _ => unimplemented!("command not supported"),
         }
     }
@@ -35,6 +39,7 @@ pub struct Input {
     pub command: Command,
     pub pier: Option<u64>,
     pub face: Option<u64>,
+    pub route: Option<String>,
 }
 
 type Res<T, U> = IResult<T, U, VerboseError<T>>;
@@ -48,6 +53,7 @@ fn command(input: &str) -> Res<&str, Command> {
             tag_no_case("stats"),
             tag_no_case("pier-stats"),
             tag_no_case("piers"),
+            tag_no_case("route"),
         )),
     )(input)
     .map(|(next_input, res)| (next_input, res.into()))
@@ -60,6 +66,24 @@ fn number(input: &str) -> Res<&str, u64> {
     })
 }
 
+fn routechars1<T>(i: T) -> Res<T, T>
+where
+    T: InputTakeAtPosition,
+    <T as InputTakeAtPosition>::Item: AsChar,
+{
+    i.split_at_position1_complete(
+        |item| {
+            let char_item = item.as_char();
+            char_item != '-' && char_item != '/' && char_item != '\\' && !char_item.is_alphanum()
+        },
+        ErrorKind::AlphaNumeric,
+    )
+}
+
+fn route(input: &str) -> Res<&str, String> {
+    context("route", routechars1)(input).map(|(next_input, res)| (next_input, res.to_string()))
+}
+
 pub fn parse_input(input: &str) -> Res<&str, Input> {
     let (input, command) = command(input)?;
     match command {
@@ -69,6 +93,7 @@ pub fn parse_input(input: &str) -> Res<&str, Input> {
                 command,
                 pier: None,
                 face: None,
+                route: None,
             },
         )),
         Command::PierStatus => {
@@ -79,6 +104,7 @@ pub fn parse_input(input: &str) -> Res<&str, Input> {
                     command,
                     pier: Some(pier),
                     face: None,
+                    route: None,
                 },
             ))
         }
@@ -90,6 +116,7 @@ pub fn parse_input(input: &str) -> Res<&str, Input> {
                     command,
                     pier: None,
                     face: Some(face),
+                    route: None,
                 },
             ))
         }
@@ -102,6 +129,7 @@ pub fn parse_input(input: &str) -> Res<&str, Input> {
                     command,
                     pier: Some(pier),
                     face: Some(face),
+                    route: None,
                 },
             ))
         }
@@ -111,8 +139,21 @@ pub fn parse_input(input: &str) -> Res<&str, Input> {
                 command,
                 pier: None,
                 face: None,
+                route: None,
             },
         )),
+        Command::QueryRoute => {
+            let (input, route) = route(input.trim())?;
+            Ok((
+                input,
+                Input {
+                    command,
+                    pier: None,
+                    face: None,
+                    route: Some(route),
+                },
+            ))
+        }
     }
     /*    context("input", tuple((command, opt(tag(" ")), opt(number), opt(tag(" ")), opt(number))))(input).map(
         |(next_input, (command, _, pier, _, face))| {
