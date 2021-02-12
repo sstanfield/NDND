@@ -156,34 +156,12 @@ class Program {
 								command.erase(elen);
 							}
 							if (command == "status") {
-								m_client->getStatus(
-								    [cl](const string &json) {
-									    if (write(cl, json.c_str(),
-									              json.length() + 1) == -1) {
-										    // XXX Close fd
-										    perror("AH Client: ERROR writing "
-										           "to client");
-									    }
-								    },
-								    [cl](const string &error) {
-									    string message = "ERROR getting status";
-									    if (write(cl, message.c_str(),
-									              message.length() + 1) == -1) {
-										    // XXX Close fd
-										    perror("AH Client: ERROR writing "
-										           "to client");
-									    }
-									    cout << "AH Client: Got error checking "
-									            "status, "
-									         << error << endl;
-								    });
-							} else if (command == "pier-status") {
 								if (results.size() != 2) {
-									cout << "AH Client: pier-status requires a "
-									        "pier id"
+									cout << "AH Client: status requires a "
+									        "pier id (0 for local)"
 									     << endl;
 									string message =
-									    "ERROR pier-status requires pier id";
+									    "ERROR status requires pier id";
 									if (write(cl, message.c_str(),
 									          message.length() + 1) == -1) {
 										// XXX Close fd
@@ -217,27 +195,28 @@ class Program {
 								    });
 							} else if (command == "piers") {
 								stringstream pierstr;
-								bool first = true;
 								pierstr << "[";
-								m_client->visitPiers([&first, &pierstr](
+								pierstr << endl << "    ";
+								std::string ip_str(
+								    inet_ntoa(m_client->getIp()));
+								pierstr
+								    << R"({"id":0)"
+								    << R"(,"faceId":0)"
+								    << R"(,"prefix":")" << m_client->getPrefix()
+								    << R"(","ip":")" << ip_str << R"(","port":)"
+								    << m_client->getPort() << "}";
+								m_client->visitPiers([&pierstr](
 								                         const DBEntry &pier) {
-									if (first) {
-										pierstr << endl << "    ";
-										first = false;
-									} else {
-										pierstr << "," << endl << "    ";
-									}
+									pierstr << "," << endl << "    ";
 									std::string ip_str(inet_ntoa(pier.ip));
-									pierstr << R"({"id":)" << pier.id
+									pierstr << R"({"id":)" << pier.id + 1
 									        << R"(,"faceId":)" << pier.faceId
 									        << R"(,"prefix":")" << pier.prefix
 									        << R"(","ip":")" << ip_str
 									        << R"(","port":)" << pier.port
 									        << "}";
 								});
-								if (!first) {
-									pierstr << endl;
-								}
+								pierstr << endl;
 								pierstr << "]" << endl;
 								if (write(cl, pierstr.str().c_str(),
 								          pierstr.str().length() + 1) == -1) {

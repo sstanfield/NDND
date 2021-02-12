@@ -83,17 +83,7 @@ fn print_json(input: &Input, json: &str) -> std::io::Result<()> {
             Command::Status => {
                 print_status(json)?;
             }
-            Command::PierStatus => {
-                print_status(json)?;
-            }
-            Command::Stats => {
-                if let Some(face_id) = input.face {
-                    print_stats(face_id, json)?
-                } else {
-                    eprintln!("Error, stats requires a face id");
-                }
-            }
-            Command::PierStats => {
+            Command::Face => {
                 if let Some(face_id) = input.face {
                     print_stats(face_id, json)?
                 } else {
@@ -103,10 +93,17 @@ fn print_json(input: &Input, json: &str) -> std::io::Result<()> {
             Command::Piers => {
                 let piers: Vec<Pier> = serde_json::from_str(&json)?;
                 for pier in piers.iter() {
-                    println!(
-                        "{}: {} ({}) {}:{}",
-                        pier.id, pier.prefix, pier.face_id, pier.ip, pier.port
-                    );
+                    if pier.id == 0 {
+                        println!(
+                            "{}: {} LOCAL {}:{}",
+                            pier.id, pier.prefix, pier.ip, pier.port
+                        );
+                    } else {
+                        println!(
+                            "{}: {} ({}) {}:{}",
+                            pier.id, pier.prefix, pier.face_id, pier.ip, pier.port
+                        );
+                    }
                 }
             }
             Command::QueryRoute => {
@@ -140,23 +137,12 @@ fn main() -> std::io::Result<()> {
         .arg(
             Arg::with_name("status")
                 .long("status")
-                .help("List the status of the local NDN."),
-        )
-        .arg(
-            Arg::with_name("pier-status")
-                .long("pier-status")
                 .help("List the status of a pier (by id from --piers).")
                 .takes_value(true),
         )
         .arg(
-            Arg::with_name("stats")
-                .long("stats")
-                .help("Detailed stats for the given local face id.")
-                .takes_value(true),
-        )
-        .arg(
-            Arg::with_name("pier-stats")
-                .long("pier-stats")
+            Arg::with_name("face")
+                .long("face")
                 .help("Detailed stats for a pier's face id.")
                 .takes_value(true)
                 .multiple(true)
@@ -192,23 +178,8 @@ fn main() -> std::io::Result<()> {
         repl = false;
     }
     if matches.is_present("status") {
-        writeln!(stream, "status")?;
-        let json = get_json(&mut stream)?;
-        println!("STATUS:");
-        print_json(
-            &Input {
-                command: Command::Status,
-                pier: None,
-                face: None,
-                route: None,
-            },
-            &json,
-        )?;
-        repl = false;
-    }
-    if matches.is_present("pier-status") {
         let pier = matches
-            .value_of("pier-status")
+            .value_of("status")
             .unwrap_or("0")
             .parse::<u64>()
             .map_err(|e| {
@@ -217,7 +188,7 @@ fn main() -> std::io::Result<()> {
                     format!("Pier not a number {}", e),
                 )
             })?;
-        writeln!(stream, "pier-status {}", pier)?;
+        writeln!(stream, "status {}", pier)?;
         let json = get_json(&mut stream)?;
         println!("PIER-STATUS pier {}:", pier);
         print_json(
@@ -231,33 +202,8 @@ fn main() -> std::io::Result<()> {
         )?;
         repl = false;
     }
-    if matches.is_present("stats") {
-        let face = matches
-            .value_of("stats")
-            .unwrap_or("0")
-            .parse::<u64>()
-            .map_err(|e| {
-                std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    format!("Stats face id not a number {}", e),
-                )
-            })?;
-        writeln!(stream, "status")?;
-        let json = get_json(&mut stream)?;
-        println!("STATS face {}:", face);
-        print_json(
-            &Input {
-                command: Command::Stats,
-                pier: None,
-                face: Some(face),
-                route: None,
-            },
-            &json,
-        )?;
-        repl = false;
-    }
-    if matches.is_present("pier-stats") {
-        if let Some(mut vals) = matches.values_of("pier-stats") {
+    if matches.is_present("face") {
+        if let Some(mut vals) = matches.values_of("face") {
             let pier = vals.next().unwrap_or("X").parse::<u64>().map_err(|e| {
                 std::io::Error::new(
                     std::io::ErrorKind::Other,
@@ -270,12 +216,12 @@ fn main() -> std::io::Result<()> {
                     format!("Pier-stats face id not a number {}", e),
                 )
             })?;
-            writeln!(stream, "pier-status {}", pier)?;
+            writeln!(stream, "status {}", pier)?;
             println!("PIER-STATS pier {} face {}:", pier, face);
             let json = get_json(&mut stream)?;
             print_json(
                 &Input {
-                    command: Command::Stats,
+                    command: Command::Face,
                     pier: Some(pier),
                     face: Some(face),
                     route: None,
@@ -314,14 +260,11 @@ fn main() -> std::io::Result<()> {
                         } else {
                             let mut get_print = true;
                             match inval.command {
-                                Command::Status => writeln!(stream, "status")?,
-                                Command::Stats => writeln!(stream, "status")?,
-                                // The next two unwraps should be ok because the parser would error out if pier was None.
-                                Command::PierStatus => {
-                                    writeln!(stream, "pier-status {}", inval.pier.unwrap())?
+                                Command::Status => {
+                                    writeln!(stream, "status {}", inval.pier.unwrap())?
                                 }
-                                Command::PierStats => {
-                                    writeln!(stream, "pier-status {}", inval.pier.unwrap())?
+                                Command::Face => {
+                                    writeln!(stream, "status {}", inval.pier.unwrap())?
                                 }
                                 Command::Piers => writeln!(stream, "piers")?,
                                 Command::QueryRoute => {
@@ -330,15 +273,22 @@ fn main() -> std::io::Result<()> {
                                     let json = get_json(&mut stream)?;
                                     let piers: Vec<Pier> = serde_json::from_str(&json)?;
                                     for pier in piers.iter() {
-                                        println!("pier: {}: {}@{}", pier.id, pier.prefix, pier.ip);
-                                        writeln!(stream, "pier-status {}", pier.id)?;
+                                        if pier.id == 0 {
+                                            println!(
+                                                "pier: {} (LOCAL): {}@{}",
+                                                pier.id, pier.prefix, pier.ip
+                                            );
+                                        } else {
+                                            println!(
+                                                "pier: {}: {}@{}",
+                                                pier.id, pier.prefix, pier.ip
+                                            );
+                                        }
+                                        writeln!(stream, "status {}", pier.id)?;
                                         let json = get_json(&mut stream)?;
                                         print_json(&inval, &json)?;
+                                        println!();
                                     }
-                                    println!("Local Faces:");
-                                    writeln!(stream, "status")?;
-                                    let json = get_json(&mut stream)?;
-                                    print_json(&inval, &json)?;
                                 }
                             }
                             if get_print {

@@ -13,9 +13,7 @@ use nom::{
 #[derive(Debug, PartialEq, Eq)]
 pub enum Command {
     Status,
-    PierStatus,
-    Stats,
-    PierStats,
+    Face,
     Piers,
     QueryRoute,
 }
@@ -24,9 +22,7 @@ impl From<&str> for Command {
     fn from(i: &str) -> Self {
         match i.to_lowercase().as_str() {
             "status" => Command::Status,
-            "pier-status" => Command::PierStatus,
-            "stats" => Command::Stats,
-            "pier-stats" => Command::PierStats,
+            "face" => Command::Face,
             "piers" => Command::Piers,
             "route" => Command::QueryRoute,
             _ => unimplemented!("command not supported"),
@@ -49,9 +45,7 @@ fn command(input: &str) -> Res<&str, Command> {
         "command",
         alt((
             tag_no_case("status"),
-            tag_no_case("pier-status"),
-            tag_no_case("stats"),
-            tag_no_case("pier-stats"),
+            tag_no_case("face"),
             tag_no_case("piers"),
             tag_no_case("route"),
         )),
@@ -87,17 +81,12 @@ fn route(input: &str) -> Res<&str, String> {
 pub fn parse_input(input: &str) -> Res<&str, Input> {
     let (input, command) = command(input)?;
     match command {
-        Command::Status => Ok((
-            input,
-            Input {
-                command,
-                pier: None,
-                face: None,
-                route: None,
-            },
-        )),
-        Command::PierStatus => {
-            let (input, pier) = number(input.trim())?;
+        Command::Status => {
+            let (input, pier) = if input.trim().is_empty() {
+                (input, 0)
+            } else {
+                number(input.trim())?
+            };
             Ok((
                 input,
                 Input {
@@ -108,21 +97,15 @@ pub fn parse_input(input: &str) -> Res<&str, Input> {
                 },
             ))
         }
-        Command::Stats => {
-            let (input, face) = number(input.trim())?;
-            Ok((
-                input,
-                Input {
-                    command,
-                    pier: None,
-                    face: Some(face),
-                    route: None,
-                },
-            ))
-        }
-        Command::PierStats => {
-            let (input, pier) = number(input.trim())?;
-            let (input, face) = number(input.trim())?;
+        Command::Face => {
+            let (input, mut pier) = number(input.trim())?;
+            let (input, face) = if input.trim().is_empty() {
+                let tp = pier;
+                pier = 0;
+                (input, tp)
+            } else {
+                number(input.trim())?
+            };
             Ok((
                 input,
                 Input {
@@ -155,18 +138,6 @@ pub fn parse_input(input: &str) -> Res<&str, Input> {
             ))
         }
     }
-    /*    context("input", tuple((command, opt(tag(" ")), opt(number), opt(tag(" ")), opt(number))))(input).map(
-        |(next_input, (command, _, pier, _, face))| {
-            (
-                next_input,
-                Input {
-                    command,
-                    pier,
-                    face,
-                },
-            )
-        },
-    )*/
 }
 
 #[cfg(test)]

@@ -7,9 +7,16 @@ Install rust and use cargo, ie "cargo run" or "cargo build".
 
 ## Command
 
-Will connect to the default agent socket and supports the following commands:
-- piers: list all the piers this agent know about
+Will connect to the default agent socket and supports the following commands at the prompt:
+- piers: list all the piers this agent knows about
 - status: list the faces for the current agent
-- stats #: list the local stats for face #
-- pier-status #: list the faces for the remote pier # (from piers list)
-- pier-stats #1 #2: list the stats for pier #1, face #2
+- status #: list the faces for the remote pier # (from piers list)
+- face #1 #2: list the stats for pier #1, face #2
+- route name: query local and all piers for info on route name and display it
+
+## Arguments
+
+Will accept the follow arguments, execute the command(s) and exit (no prompt):
+- --piers: list all the piers this agent knows about
+- --status #: list the faces for pier #
+- --face #1 #2: list the stats for pier #1, face #2

@@ -44,6 +44,9 @@ class AHClient {
 	void getPierStatus(long id, const StatusCallback &statusCallback,
 	                   const StatusErrorCallback &errorCallback);
 	void visitPiers(const VisitPiersCallback &callback);
+	auto getIp() -> in_addr { return m_IP; }
+	auto getPort() -> uint16_t { return m_port; }
+	auto getPrefix() -> ndn::Name { return m_prefix; }
 
   private:
 	void appendIpPort(ndn::Name &name);

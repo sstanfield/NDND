@@ -955,11 +955,17 @@ void AHClient::setIP() {
 void AHClient::getPierStatus(const long id,
                              const StatusCallback &statusCallback,
                              const StatusErrorCallback &errorCallback) {
+	if (id == 0) {
+		m_statusinfo->getStatus(statusCallback, errorCallback);
+		return;
+	}
+	bool found = false;
+	const long db_id = id - 1;
 	for (auto it = m_db.begin(); it != m_db.end();) {
-		if (it->id == id) {
+		if (it->id == db_id) {
 			const DBEntry item = *it;
 			if (item.prefix.empty()) {
-				errorCallback("Peir has no prefix!");
+				errorCallback("Pier has no prefix!");
 				break;
 			}
 			Name name(item.prefix);
@@ -1000,9 +1006,13 @@ void AHClient::getPierStatus(const long id,
 				              << interest << std::endl;
 				    errorCallback("Got Timeout from pier.");
 			    });
+			found = true;
 			break;
 		}
 		++it;
+	}
+	if (!found) {
+		errorCallback("Pier not found!");
 	}
 }
 
