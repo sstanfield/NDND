@@ -111,6 +111,7 @@ fn print_json(input: &Input, json: &str) -> std::io::Result<()> {
                     print_stats_by_route(route, json)?;
                 }
             }
+            Command::Help => {}
         }
     }
     Ok(())
@@ -289,6 +290,17 @@ fn main() -> std::io::Result<()> {
                                         print_json(&inval, &json)?;
                                         println!();
                                     }
+                                }
+                                Command::Help => {
+                                    get_print = false;
+                                    println!();
+                                    println!("Available Commands");
+                                    println!("status [pier]      : status of pier (default to 0- i.e. local)");
+                                    println!("face [pier] face_id: face info for pier's face_id (default to 0- i.e. local)");
+                                    println!("piers              : list known piers");
+                                    println!("route name         : find and print info on the route name");
+                                    println!("help               : this");
+                                    println!();
                                 }
                             }
                             if get_print {

@@ -16,6 +16,7 @@ pub enum Command {
     Face,
     Piers,
     QueryRoute,
+    Help,
 }
 
 impl From<&str> for Command {
@@ -25,6 +26,7 @@ impl From<&str> for Command {
             "face" => Command::Face,
             "piers" => Command::Piers,
             "route" => Command::QueryRoute,
+            "help" => Command::Help,
             _ => unimplemented!("command not supported"),
         }
     }
@@ -48,6 +50,7 @@ fn command(input: &str) -> Res<&str, Command> {
             tag_no_case("face"),
             tag_no_case("piers"),
             tag_no_case("route"),
+            tag_no_case("help"),
         )),
     )(input)
     .map(|(next_input, res)| (next_input, res.into()))
@@ -137,6 +140,15 @@ pub fn parse_input(input: &str) -> Res<&str, Input> {
                 },
             ))
         }
+        Command::Help => Ok((
+            input,
+            Input {
+                command,
+                pier: None,
+                face: None,
+                route: None,
+            },
+        )),
     }
 }
 
@@ -148,12 +160,9 @@ mod tests {
     #[test]
     fn test_command() {
         assert_eq!(command("status"), Ok(("", Command::Status)));
-        assert_eq!(command("pier-status 0"), Ok((" 0", Command::PierStatus)));
-        assert_eq!(command("stats 250"), Ok((" 250", Command::Stats)));
-        assert_eq!(
-            command("pier-stats 0 250"),
-            Ok((" 0 250", Command::PierStats))
-        );
+        assert_eq!(command("face 250"), Ok((" 250", Command::Face)));
+        assert_eq!(command("face 1 250"), Ok((" 1 250", Command::Face)));
+        assert_eq!(command("face 0 250"), Ok((" 0 250", Command::Face)));
         assert_eq!(command("piers"), Ok(("", Command::Piers)));
         assert_eq!(
             command("nothing"),
@@ -210,8 +219,9 @@ mod tests {
                 "",
                 Input {
                     command: Command::Status,
-                    pier: None,
-                    face: None
+                    pier: Some(0),
+                    face: None,
+                    route: None,
                 }
             ))
         );
@@ -222,40 +232,44 @@ mod tests {
                 Input {
                     command: Command::Piers,
                     pier: None,
-                    face: None
+                    face: None,
+                    route: None,
                 }
             ))
         );
         assert_eq!(
-            parse_input("pier-status 0"),
+            parse_input("status 1"),
             Ok((
                 "",
                 Input {
-                    command: Command::PierStatus,
+                    command: Command::Status,
+                    pier: Some(1),
+                    face: None,
+                    route: None,
+                }
+            ))
+        );
+        assert_eq!(
+            parse_input("face 250"),
+            Ok((
+                "",
+                Input {
+                    command: Command::Face,
                     pier: Some(0),
-                    face: None
+                    face: Some(250),
+                    route: None,
                 }
             ))
         );
         assert_eq!(
-            parse_input("stats 250"),
+            parse_input("face 1 250"),
             Ok((
                 "",
                 Input {
-                    command: Command::Stats,
-                    pier: None,
-                    face: Some(250)
-                }
-            ))
-        );
-        assert_eq!(
-            parse_input("pier-stats 0 250"),
-            Ok((
-                "",
-                Input {
-                    command: Command::PierStats,
-                    pier: Some(0),
-                    face: Some(250)
+                    command: Command::Face,
+                    pier: Some(1),
+                    face: Some(250),
+                    route: None,
                 }
             ))
         );
@@ -271,7 +285,7 @@ mod tests {
             }))
         );
         assert_eq!(
-            parse_input("pier-status"),
+            parse_input("face"),
             Err(nom::Err::Error(VerboseError {
                 errors: vec![
                     ("", VerboseErrorKind::Nom(ErrorKind::Digit)),
@@ -281,7 +295,7 @@ mod tests {
             }))
         );
         assert_eq!(
-            parse_input("pier-stats 0"),
+            parse_input("face"),
             Err(nom::Err::Error(VerboseError {
                 errors: vec![
                     ("", VerboseErrorKind::Nom(ErrorKind::Digit)),
